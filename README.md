@@ -5,14 +5,15 @@
 Rasterwright governs the image assets that live in a repository. You write down
 what those images are allowed to be - maximum dimensions, a byte ceiling, a
 preferred format, no EXIF, sRGB - and Rasterwright tells you which files break
-the rules.
+the rules, and what it would do about each one.
 
 It is the ESLint-shaped layer for images: opinions about the source you commit,
 not a replacement for your build system's asset pipeline.
 
 ## Status
 
-**Early, personal, open-source. One command works today: `check`.**
+**Early, personal, open-source. Two read-only commands work today: `check`
+and `fix --dry-run`.**
 
 This is a tool built because its author wanted to use it. It is not a product,
 there is nothing to buy, and it makes no network calls, collects no telemetry
@@ -23,13 +24,20 @@ What exists right now:
 | Command | Status |
 |---|---|
 | `rasterwright check` | Implemented, read-only |
-| `rasterwright fix` | Not implemented |
+| `rasterwright fix --dry-run` | Implemented, read-only. Reports the plan it would execute. |
+| `rasterwright fix` | **Not implemented.** Refuses to run. |
 | `rasterwright review` | Not implemented |
 | `rasterwright init` | Not implemented |
 
-`check` never modifies anything. That is enforced by integration tests that
-snapshot the size, mode, mtime and content hash of every file in a project
-before and after a run and assert they are identical.
+Nothing in this build writes an image byte. `fix --dry-run` decides what
+Rasterwright *would* do and prints it; there is no executor behind it yet, and
+plain `rasterwright fix` exits with an error rather than quietly behaving as a
+dry run.
+
+Both commands' read-only guarantee is enforced by integration tests that
+snapshot the path, size, mode, mtime and content hash of every file in a
+project - and the set of directories - before and after a run, and assert they
+are identical.
 
 ## Install (development)
 
@@ -50,13 +58,15 @@ Run it against a project:
 ```bash
 # from inside the project you want to check
 node /path/to/rasterwright/dist/cli/index.js check
+node /path/to/rasterwright/dist/cli/index.js fix --dry-run
+node /path/to/rasterwright/dist/cli/index.js fix --dry-run --allow-renames
 
 # or, during development, from the rasterwright checkout
 npm run rasterwright -- check --config /path/to/project/.rasterwright.yml
 ```
 
-`check` resolves the project root from wherever the config file lives, so the
-second form works from anywhere.
+Both commands resolve the project root from wherever the config file lives, so
+the second form works from anywhere. Neither writes anything.
 
 ## Configuration
 
@@ -257,8 +267,9 @@ Each finding, and each file, reports whether a future `fix` could resolve it:
 
 Some fixes rename the file - a format conversion (`hero.png` -> `hero.webp`),
 or correcting an extension that disagrees with its contents. Renames can break
-references in source code, so `fix` will require explicit per-run authorization
-(`--allow-renames`) before performing one. `check` reports them either way.
+references in source code, so `fix` requires explicit per-run authorization
+(`--allow-renames`) before planning one. `check` reports them either way; see
+[`rasterwright fix --dry-run`](#rasterwright-fix---dry-run).
 
 ## `rasterwright check`
 
@@ -404,16 +415,297 @@ block, or `(built-in)` for checks with no config key.
 
 This shape is not a stable public API yet.
 
+## `rasterwright fix --dry-run`
+
+`fix` turns findings into a **plan**: the ordered operations that would make a
+file comply. `--dry-run` prints that plan and stops.
+
+**It writes nothing.** No image bytes, no temp file, no cache, no manifest, no
+backup, no rename. It runs `check`'s read-only pipeline and reasons over the
+result.
+
+```
+$ rasterwright fix --dry-run
+Rasterwright Fix Plan
+
+WOULD FIX
+
+→ assets/src/images/cah-form-osc.png
+
+    encode        PNG
+    target        <= 500 KB
+    transparency  preserve
+    metadata      strip during the rewrite above
+    result        must be verified during execution
+    note          PNG is lossless, so the only lever is a maximum-effort re-encode; the ceiling may be unreachable
+
+→ assets/src/images/nolanville_skinny-scaled.jpg
+
+    resize        2560x1001 -> 2400x938
+    encode        JPEG
+    ceiling       <= 500 KB
+    quality       82, searched down to 40 if needed
+    re-encode     lossy source re-encoded; some generation loss
+    result        must be verified during execution
+
+REQUIRES PERMISSION
+
+⊘ assets/src/images/bokka-logo-transparent.png
+
+    rename        .png -> .webp
+    path          assets/src/images/bokka-logo-transparent.webp
+    pixels        already in the target format; no re-encode required
+    blocked       correcting the extension renames this file, which can break references to it
+    permission    rerun with --allow-renames
+
+LEFT UNCHANGED
+
+23 images carry warnings only
+
+    Metadata is normalized during a rewrite an error already required,
+    never as a reason to rewrite a compliant file.
+
+75 images inspected
+3 files would be modified
+1 file requires permission
+23 warning-only files left unchanged
+48 already compliant
+1 image matched no rule and was skipped
+
+Nothing was written. This is a plan, not a run.
+Rerun with --allow-renames to plan the filename changes above.
+Executing a plan is not implemented yet.
+```
+
+### Plain `rasterwright fix` is not implemented
+
+```
+$ rasterwright fix
+rasterwright: fix execution is not implemented yet.
+  Use `rasterwright fix --dry-run` to inspect the planned changes.
+```
+
+Exit code `2`. It is deliberately **not** a silent alias for `--dry-run`.
+Quietly making the dangerous command safe teaches the habit of typing the
+dangerous command, which is exactly the muscle memory not to build before an
+executor exists.
+
+### One file, one plan
+
+A file's findings do not become a list of independent fixes. An image that is
+too wide, over budget, in the wrong format and carrying EXIF is resized once,
+encoded once, and renamed once. Operations are emitted in execution order:
+
+| # | Operation | Notes |
+|---|---|---|
+| 1 | `autoOrient` | First: it changes the dimensions everything downstream depends on. |
+| 2 | `resize` | Down only, `fit: inside`, both dimensions rounded **down** so the result can never land a pixel over a limit. |
+| 3 | `toColorSpace` | After geometry, before the encoder. Only for a confident non-sRGB error. |
+| 4 | `encode` | Exactly one per file. Metadata stripping is an encoder setting, not a second pass. |
+| 5 | `rename` | Last, so no output has to be reopened under a new name. |
+
+A compliant file is never re-encoded. A file is never encoded twice in one run.
+
+### File statuses
+
+| Status | Meaning |
+|---|---|
+| `unchanged` | Nothing to do. No error-level findings. |
+| `planned` | A complete plan exists and this run could execute it. |
+| `requires-permission` | A plan exists, but the run lacks permission for it. |
+| `unfixable` | No safe transform resolves it, or the image could not be decoded. |
+| `unsupported` | v0 does not transform this kind of image at all (today: animated). |
+
+### `--allow-renames` is execution permission, not policy
+
+Two operations change a filename, and both can break a reference in source code:
+
+1. a **format conversion** - `hero.jpg` -> `hero.webp`;
+2. an **extension correction** - `logo.png` whose bytes are already WebP
+   becoming `logo.webp`, with no pixel change at all.
+
+That the second rewrites no pixels does not make it safer, so both need
+`--allow-renames`. It is a property of the *invocation*, not of the repository,
+so there is deliberately no `allowRenames` config key.
+
+Without the flag the file's whole plan is blocked - not just the rename:
+
+```
+image.png   (bytes are WebP, and it is also too wide)
+
+  without --allow-renames:  requires-permission, no operations at all
+  with    --allow-renames:  resize, encode, rename
+```
+
+Resizing a file Rasterwright is about to leave deliberately mis-named would
+spend a lossy re-encode the authorized run has to spend again, and would end
+the run having knowingly produced a file that is still invalid. A plan is
+applied coherently or not applied.
+
+The blocked plan is still reported, under `blockedOperations` in `--json` and
+in the `REQUIRES PERMISSION` section of the human report, so granting
+permission is a decision rather than a leap.
+
+### An extension correction rewrites no pixels
+
+`logo.png` holding WebP bytes needs its *name* fixed and nothing else. The plan
+is a single `rename` with `reencode: false`; decoding and re-encoding a
+perfectly good image to correct a filename would be pure generation loss.
+
+The exception is when the policy pins the format back to what the extension
+claims: under `format: png`, that same file is re-encoded to real PNG and keeps
+its name, so no rename and no permission are involved.
+
+### Metadata is normalized opportunistically, never on its own
+
+`stripMetadata: true` means *if Rasterwright rewrites this file, drop the
+ancillary metadata*. It never means *rewrite a compliant file to clear EXIF*.
+
+| Findings | Plan |
+|---|---|
+| metadata warning only | `unchanged`, no operations |
+| an error **and** a metadata warning | the rewrite the error required also strips metadata |
+
+So metadata warnings can persist indefinitely on files nothing else touches.
+That is the correct outcome: producing a diff on a file nobody said was wrong is
+exactly the surprise this tool exists to avoid. There is no `--include-warnings`
+and no `--fail-on-warnings`.
+
+### Byte budgets stay honest
+
+Planning has not encoded anything, so it does not predict an output size. An
+encode against a ceiling reports the target and the fact that the outcome must
+be measured:
+
+```
+    target        <= 500 KB
+    result        must be verified during execution
+```
+
+There is no "expected output: 432 KB" anywhere, because producing that number
+means encoding, and encoding is execution's job.
+
+`target` and `ceiling` are different labels on purpose: `target` means the byte
+budget is *why* this encode is planned, `ceiling` means it is a limit that also
+applies to a rewrite something else required.
+
+PNG gets an extra note. It is lossless, so the only lever is a maximum-effort
+re-encode worth a few percent; palette quantization is deliberately not in v0
+because it wrecks photographs. An arbitrary PNG byte budget may simply be
+unreachable, and the plan says so rather than implying success.
+
+### What a plan has not checked
+
+Planning is per file and reads nothing beyond that file's own inspection
+result. It therefore does not know about the other files in the run or about
+the filesystem, so it cannot yet detect two files planning a rename to the same
+path, or a rename target that already exists on disk. Validating a whole plan
+set against the repository is execution's preflight step, and it is not built.
+
+Treat a dry-run plan as "this is what Rasterwright intends", not "this is
+guaranteed to apply cleanly".
+
+### A lossy re-encode is stated, not hidden
+
+Re-encoding an already-lossy image is allowed when an error-level finding
+demands it - a WebP over its ceiling under `format: webp` is re-encoded in
+place, no rename, no permission. Generation loss is real, so the plan says
+`re-encode  lossy source re-encoded; some generation loss` rather than
+presenting it as a free saving.
+
+## `rasterwright fix --dry-run --json`
+
+Same rules as `check --json`: stdout carries JSON and nothing else, diagnostics
+go to stderr. `files` lists every file that is **not** `unchanged` - unchanged
+files are counted in the summary and omitted, because `check --json` already
+describes them and repeating it would bury the files a fix would touch.
+
+```json
+{
+  "rasterwrightVersion": "0.1.0",
+  "dryRun": true,
+  "permissions": { "allowRenames": false },
+  "complete": false,
+  "configPath": "/repo/.rasterwright.yml",
+  "root": "/repo",
+  "summary": {
+    "checked": 75,
+    "planned": 3,
+    "requiresPermission": 1,
+    "unfixable": 0,
+    "unsupported": 0,
+    "unchanged": 71,
+    "unchangedWithWarnings": 23,
+    "operations": 4,
+    "ignored": 1
+  },
+  "files": [
+    {
+      "path": "assets/src/images/nolanville_skinny-scaled.jpg",
+      "targetPath": "assets/src/images/nolanville_skinny-scaled.jpg",
+      "status": "planned",
+      "operations": [
+        {
+          "op": "resize",
+          "from": { "width": 2560, "height": 1001 },
+          "to": { "width": 2400, "height": 938 },
+          "maxWidth": 2400,
+          "fit": "inside",
+          "upscale": false
+        },
+        {
+          "op": "encode",
+          "format": "jpeg",
+          "budgetDriven": false,
+          "stripMetadata": true,
+          "preserveAlpha": false,
+          "lossyReencode": true,
+          "outcomeRequiresVerification": true,
+          "maxBytes": 512000,
+          "quality": { "start": 82, "floor": 40 }
+        }
+      ],
+      "blockedOperations": [],
+      "resolves": ["maxWidth"],
+      "unresolved": [],
+      "normalizedDuringRewrite": [],
+      "warnings": [],
+      "requiresVerification": true,
+      "requiredPermissions": [],
+      "reasons": [],
+      "notes": []
+    }
+  ],
+  "diagnostics": []
+}
+```
+
+`complete` is `true` when every error-level finding is covered by a plan this
+run could actually execute - nothing blocked, unfixable or unsupported. It is
+what the exit code is derived from. Warnings are irrelevant to it.
+
+`resolves` and `unresolved` name the checks a plan would and would not clear.
+`normalizedDuringRewrite` names warnings that get cleaned up for free on the
+way through. `requiresVerification` says the outcome depends on encoding results
+planning cannot know.
+
+This shape is not a stable public API yet.
+
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| `0` | Clean. No error-level findings. Warnings and notes do not fail a run. |
-| `1` | At least one error, including a governed image that could not be read. |
-| `2` | Configuration or runtime error. Nothing was checked. |
+One model, both commands. Warnings never produce a non-zero exit.
+
+| Code | `check` | `fix --dry-run` |
+|---|---|---|
+| `0` | No error-level findings. | Every error is covered by a plan this run could execute (or there are none). |
+| `1` | At least one error. | At least one file is left unresolved: blocked on permission, unfixable, or unsupported. |
+| `2` | Configuration or runtime error. Nothing was checked. | Same. Plain `fix` without `--dry-run` also exits `2`. |
 
 An unreadable image is an exit `1`, not a `0`: it is a file that is supposed to
 be governed and is not being governed. The rest of the batch still runs.
+
+So `fix --dry-run` exiting `0` means "Rasterwright has a complete plan it could
+execute", which is the useful thing to gate automation on.
 
 ## Options
 
@@ -425,17 +717,27 @@ rasterwright check [options]
   -v, --verbose        list every warning and note individually instead of summarizing
   --no-gitignore       do not skip git-ignored files
   --concurrency <n>    number of images to inspect in parallel
+
+rasterwright fix [options]
+
+  -c, --config <path>  path to .rasterwright.yml (default: nearest one, searching upwards)
+  --dry-run            report what fix would do, and write nothing (required today)
+  --allow-renames      permit operations that change a filename
+  --json               emit machine-readable JSON on stdout instead of a report
+  --no-gitignore       do not skip git-ignored files
+  --concurrency <n>    number of images to inspect in parallel
 ```
 
 ## Planned
 
 Clearly labelled as **not built**:
 
-- `rasterwright fix` - deterministic, idempotent fixes: auto-orient, downscale,
-  strip metadata, normalise to sRGB, convert format, and search encoder quality
-  downward to meet a byte ceiling. Operations that rename a file will require
-  `--allow-renames`; without it, `fix` skips the rename and reports why rather
-  than failing the batch.
+- **Executing a plan.** Everything `fix --dry-run` describes - auto-orient,
+  downscale, colour conversion, one encode with a downward quality search
+  against the byte ceiling, atomic temp-file-plus-rename writes, per-file
+  failure isolation, and verification of the output against policy. The plans
+  exist; nothing applies them yet, on purpose. Rasterwright gets permission to
+  change pixels after its plans have been read on real repositories.
 - `rasterwright review` - a local static HTML before/after page.
 - `rasterwright init` - a starter config generated from what a repo already
   contains.
@@ -462,19 +764,26 @@ npm run rasterwright -- check --config <path>   # run from source
 
 ```
 src/
-  cli/        commander wiring, exit codes, human and JSON renderers
-  config/     load, validate and resolve .rasterwright.yml
-  scanner/    file discovery and Sharp-based inspection
-  policy/     pure functions: ImageInfo + rule -> findings
-  utils/      byte parsing, hashing, ICC reading, paths, concurrency
-  run-check.ts  the read-only pipeline the CLI calls
+  cli/         commander wiring, exit codes, human and JSON renderers
+  config/      load, validate and resolve .rasterwright.yml
+  scanner/     file discovery and Sharp-based inspection
+  policy/      pure functions: ImageInfo + rule -> findings
+  operations/  pure functions: findings + permissions -> PlannedOperation[]
+  utils/       byte parsing, hashing, ICC reading, paths, concurrency
+  run-check.ts the read-only check pipeline
+  run-fix.ts   check's pipeline plus planning
 ```
 
 The architecture is `policy -> analysis -> operation plan -> execution ->
-verification`. This build stops after analysis. The CLI never calls Sharp
-directly, `policy/` is pure functions over plain data, and nothing on the check
-path imports anything that writes - which is what makes `check` read-only by
-construction rather than by discipline.
+verification`. **This build stops after the operation plan.** `operations/plan.ts`
+exists; `operations/execute.ts` does not.
+
+The CLI never calls Sharp directly. `policy/` and `operations/plan.ts` are pure
+functions over plain data - the planner reads nothing beyond the `FileResult` it
+is handed, calls no Sharp, and touches no filesystem, which is what makes plans
+deterministic and testable without a single image file. Nothing on either
+command's path imports anything that writes, which is what makes both read-only
+by construction rather than by discipline.
 
 Fixture images are generated by `scripts/generate-fixtures.ts` rather than
 committed as binaries. They are real files produced by Sharp, deterministic, and

@@ -17,7 +17,7 @@ import { FORMAT_LABEL, type RuleContext } from './types.js';
  *
  * `.jpg` and `.jpeg` are the same format and neither is a mismatch.
  */
-const EXTENSION_FORMATS: Record<string, ImageFormat> = {
+export const EXTENSION_FORMATS: Record<string, ImageFormat> = {
   '.jpg': 'jpeg',
   '.jpeg': 'jpeg',
   '.png': 'png',

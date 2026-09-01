@@ -102,3 +102,94 @@ describe('check is read-only', () => {
     expect(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' })).toBe(status);
   });
 });
+
+/**
+ * The acceptance criterion for the planning layer, and it is the same one.
+ *
+ * `fix --dry-run` decides what Rasterwright *would* do. Deciding is not doing:
+ * it runs `check`'s pipeline, plans over the result, and prints. No image byte,
+ * no temp file, no cache, no manifest, no backup, no rename - with or without
+ * the permission that would authorize a rename.
+ *
+ * This test exists because "the executor does not exist yet" is not a safety
+ * property. It will keep being true after the executor does exist.
+ */
+describe('fix --dry-run is read-only', () => {
+  it('changes nothing in a project with errors', async () => {
+    await assertReadOnly('mixed', ['fix', '--dry-run']);
+  });
+
+  it('changes nothing with --json', async () => {
+    await assertReadOnly('mixed', ['fix', '--dry-run', '--json']);
+  });
+
+  it('changes nothing with --allow-renames', async () => {
+    // Permission to *plan* a rename is not permission to perform one, and this
+    // build performs nothing regardless.
+    await assertReadOnly('mixed', ['fix', '--dry-run', '--allow-renames']);
+  });
+
+  it('changes nothing with --json and --allow-renames together', async () => {
+    await assertReadOnly('mixed', ['fix', '--dry-run', '--json', '--allow-renames']);
+  });
+
+  it('changes nothing in a project whose findings are all warnings', async () => {
+    await assertReadOnly('warnings-only', ['fix', '--dry-run']);
+  });
+
+  it('changes nothing in a clean project', async () => {
+    await assertReadOnly('clean', ['fix', '--dry-run']);
+  });
+
+  it('changes nothing when an image is corrupt', async () => {
+    await assertReadOnly('corrupt', ['fix', '--dry-run']);
+  });
+
+  it('changes nothing when the config is malformed', async () => {
+    await assertReadOnly('broken-config', ['fix', '--dry-run']);
+  });
+
+  it('changes nothing when fix is invoked without --dry-run', async () => {
+    await assertReadOnly('mixed', ['fix']);
+    await assertReadOnly('mixed', ['fix', '--allow-renames']);
+  });
+
+  it('creates no cache, review directory, manifest or backup', async () => {
+    const root = copyProject('mixed');
+    await runCli(['fix', '--dry-run', '--allow-renames'], root);
+
+    expect(fs.existsSync(path.join(root, '.rasterwright'))).toBe(false);
+    expect(fs.readdirSync(root).sort()).toEqual(['.fixture.json', '.rasterwright.yml', 'assets', 'ungoverned']);
+  });
+
+  it('renames nothing, even with permission to plan a rename', async () => {
+    const root = copyProject('mixed');
+    const before = snapshotTree(root);
+
+    const result = await runCli(['fix', '--dry-run', '--allow-renames'], root);
+    expect(result.stdout).toMatch(/rename\s+\.png -> \.webp/);
+
+    expect(fs.existsSync(path.join(root, 'assets', 'logo-webp.png'))).toBe(true);
+    expect(fs.existsSync(path.join(root, 'assets', 'logo-webp.webp'))).toBe(false);
+    expect(fs.existsSync(path.join(root, 'assets', 'heroes', 'hero.webp'))).toBe(false);
+    expect(snapshotTree(root)).toEqual(before);
+  });
+
+  it('leaves the git index and working tree untouched inside a repo', async () => {
+    const root = copyProject('mixed');
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'add', '-A'], { cwd: root });
+    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'fixture'], {
+      cwd: root,
+    });
+
+    const before = snapshotTree(path.join(root, 'assets'));
+    const status = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
+
+    await runCli(['fix', '--dry-run', '--allow-renames'], root);
+
+    expect(snapshotTree(path.join(root, 'assets'))).toEqual(before);
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' })).toBe(status);
+  });
+});

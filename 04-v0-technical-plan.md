@@ -676,3 +676,140 @@ because the honest answer requires an encoder.
 a hard `format` requirement; a `--strict` mode that promotes unknown colour
 space to an error; caching or lazy analysis for `stats()` cost. None of these
 were justified by the real run. Revisit when a project demonstrates the need.
+
+---
+
+## 15. Refinements from implementing `fix --dry-run`
+
+Added 2026-09-01, after building the pure planner and running it against the
+same WordPress theme. These refine sections 3, 5 and 14; they do not replace
+them. Execution is still unimplemented.
+
+**1. `PlannedOperation` gained a `rename` step and lost `stripMetadata`.** The
+sketch in section 3 had a standalone `stripMetadata` operation and no way to
+express a filename change. Metadata handling is an *encoder setting* (section 5
+already said so), so representing it as its own operation implied a second
+rewrite that never happens; it is now a boolean on `encode`. `rename` is a real
+step, emitted last, and it carries `reencode: false` for the case that matters -
+correcting an extension without touching pixels.
+
+`encode` also carries what the report has to be honest about:
+`budgetDriven` (is the byte ceiling the *reason* for this encode, or a limit
+that also applies?), `lossyReencode` (generation loss is happening),
+`preserveAlpha`, and `outcomeRequiresVerification` (planning did not encode, so
+the resulting size is unknown and execution must measure it).
+
+**2. Planning is per file, and produces a file-level status.** Findings are not
+planned independently and concatenated. One file gets one coherent plan with a
+status of `unchanged`, `planned`, `requires-permission`, `unfixable` or
+`unsupported`. `unsupported` exists so an animated image is reported as out of
+scope rather than being resized into a single frame - the animation check has to
+come *before* fixability, because a resize is "fixable" in the abstract.
+
+**3. Resize floors both dimensions.** Section 4's precondition 1 said round
+down; concretely, `to.width` and `to.height` are both `Math.floor(dimension *
+ratio)` where the ratio is the tightest of `maxWidth/width`, `maxHeight/height`
+and 1. Rounding to nearest can land a pixel over a limit, which would make the
+second `fix` run find the same violation.
+
+**4. A resize implies an encode.** Pixels cannot be resized in place, so any
+geometry, orientation or colour-space change plans exactly one `encode`
+afterwards, and the byte ceiling applies to that encode even when the file was
+already under it. The report distinguishes `target` (the budget is why we are
+encoding) from `ceiling` (a limit that also applies), and both require
+verification, because re-encoding at `quality.start` a file that was originally
+encoded at a lower quality can legitimately grow it.
+
+**5. An extension mismatch is not always a rename.** `logo.png` holding WebP
+bytes under `format: png` is re-encoded to real PNG and keeps its name: the
+policy resolves the mismatch in the other direction. The rename is planned only
+when the *target format* disagrees with the current extension, which also means
+`photo.jpeg` is never renamed to `photo.jpg` for tidiness.
+
+**6. Dry-run exit codes mirror `check`'s.** `0` when every error is covered by a
+plan this run could execute, `1` when any file is left unresolved (blocked,
+unfixable, unsupported), `2` for configuration or runtime failure. Warnings
+never affect it. `fix --dry-run` exiting 0 therefore means "Rasterwright has a
+complete plan", which is the thing worth gating automation on.
+
+**7. Plain `fix` fails rather than aliasing `--dry-run`.** Until an executor
+exists, `rasterwright fix` prints that execution is not implemented and exits 2.
+Silently making the dangerous command safe would teach the habit of typing the
+dangerous command, and that habit outlives the safety.
+
+**8. Blocked plans are still reported.** A `requires-permission` file carries
+`blockedOperations` - the plan permission would unlock - while `operations` stays
+empty. Nothing executes from `blockedOperations`; it exists so granting
+`--allow-renames` is a decision rather than a leap.
+
+**9. Rename collisions are a batch preflight, not a planner concern.**
+`planFile()` stays pure and file-local: it cannot see the filesystem, and it
+cannot see the other files in the run, so it can detect neither of the two ways
+a rename collides. Pushing that into the renderer would put correctness logic in
+a formatter. Execution gets a preflight step instead:
+
+```
+FilePlan[] + existing repository paths
+    -> validatePlanSet(...)
+    -> executable / collision / blocked
+```
+
+It must eventually catch two files targeting the same output path, a rename
+target already occupied by an existing file, case-collisions where the platform
+makes them possible, and any other path-level conflict a single-file planner
+cannot see. `fix --dry-run` should eventually consume the same results, because
+a plan that cannot execute safely is not a complete plan and should not be
+reported as one. Not implemented; the dry-run planner today reports a plan that
+preflight may later reject.
+
+**10. `colorSpace: srgb` is a promise about the output, not just the pixels.**
+Execution interprets the source profile correctly, converts pixels to sRGB when
+required, encodes, and then **embeds an sRGB profile** so the result is
+explicitly tagged. An untagged output is sRGB only by convention, and the point
+of the policy is to stop relying on that convention.
+
+This means `stripMetadata: true` must never remove the guarantee `colorSpace:
+srgb` created. It covers ancillary, non-colour metadata - EXIF, XMP, IPTC,
+Photoshop tags, text chunks - and nothing else. (Section 14.4 already said an
+ICC profile is colour management rather than disposable baggage; this is the
+output-side half of it.)
+
+Where no colour-space policy applies, execution is conservative: it keeps a
+meaningful source profile rather than silently discarding it. Discarding a
+profile changes how every pixel is interpreted, which is not a normalization.
+
+**11. No source-quality inference.** Rasterwright does not try to detect the
+quality a JPEG or WebP was originally encoded at. The signals are indirect,
+per-encoder, and wrong often enough that acting on them would be a heuristic
+sitting underneath every output byte. When a hard error forces a lossy image to
+be rewritten, execution uses the configured `quality.start`, states that a lossy
+re-encode happened, and - when a ceiling exists - verifies the result against
+it. A compliant file is still never re-encoded, so the case where this would
+cost the most does not arise.
+
+The invariant this protects: **one required rewrite produces one final encode.**
+Not resize-then-encode, then re-encode to normalize, then re-encode again to
+convert format. Every required transform is folded into the single output
+encode. (This is why the planner emits exactly one `encode` per file.)
+
+**12. A PNG that may not fit is uncertain, not unfixable.** The planner is right
+to plan the encode with `outcomeRequiresVerification: true` rather than giving
+up: whether a lossless re-encode fits is an empirical question, and refusing to
+try would be as dishonest as promising success. Execution resolves it:
+
+1. attempt the allowed lossless optimization;
+2. measure the result;
+3. under `maxBytes` - accept it;
+4. over `maxBytes`, with no format escape or further downscale the policy
+   permits - **fail explicitly**: leave the original byte-for-byte untouched,
+   report the best size actually achieved and why it was not enough, mark the
+   file failed, and exit non-zero.
+
+There is no best-effort degraded PNG, and no palette quantization. The general
+shape, which is not specific to PNG:
+
+```
+planning   outcome uncertain
+execution  attempt, then verify
+failure    original untouched, reported
+```

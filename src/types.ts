@@ -259,3 +259,243 @@ export interface CheckReport {
   summary: CheckSummary;
   files: FileResult[];
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * Fix planning
+ *
+ * `check` answers "what is wrong with this file". Planning answers "what would
+ * Rasterwright do about it", and nothing more: producing a plan writes nothing,
+ * encodes nothing, and reads nothing beyond the `FileResult` it is handed.
+ *
+ * Execution (`operations/execute.ts`) does not exist yet. Until it does, a plan
+ * is the whole product of `rasterwright fix --dry-run`.
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * Permissions granted to a single fix run.
+ *
+ * These live on the *command*, never in `.rasterwright.yml`. Policy describes
+ * the state the assets should be in; a permission says what this invocation is
+ * allowed to do on the way there. Do not add an `allowRenames` config property.
+ */
+export interface FixPermissions {
+  /**
+   * `--allow-renames`. Required before any operation that changes a filename:
+   * a format conversion (`hero.jpg` -> `hero.webp`) and correcting a misleading
+   * extension (`logo.png` holding WebP bytes) both qualify. Either can break a
+   * reference in source code, which is the only thing that matters here.
+   */
+  allowRenames: boolean;
+}
+
+/** A permission a plan needs but was not given. */
+export type FixPermissionName = 'allowRenames';
+
+export interface Dimensions {
+  width: number;
+  height: number;
+}
+
+/**
+ * One deterministic step. Operations are produced in execution order:
+ *
+ *   1. autoOrient   - changes the dimensions everything downstream depends on
+ *   2. resize       - down only; encoding a smaller image is the primary lever
+ *   3. toColorSpace - after geometry, before encoding
+ *   4. encode       - exactly one per file. Metadata handling happens here.
+ *   5. rename       - last, so nothing has to be reopened under a new name
+ *
+ * A file is rewritten at most once per run. A compliant file is never
+ * rewritten at all.
+ */
+export type PlannedOperation =
+  | AutoOrientOperation
+  | ResizeOperation
+  | ColorSpaceOperation
+  | EncodeOperation
+  | RenameOperation;
+
+/** Apply the EXIF orientation flag to the pixels, then clear it. */
+export interface AutoOrientOperation {
+  op: 'autoOrient';
+  /** The flag being applied. Never 1. */
+  orientation: number;
+  /** Stored dimensions, which are what the encoded pixels currently are. */
+  from: Dimensions;
+  /** Displayed dimensions, which is what the stored pixels become. */
+  to: Dimensions;
+}
+
+/**
+ * Downscale to fit inside the policy limits.
+ *
+ * `to` is computed by rounding *down*, so the result can never land a pixel
+ * over a limit and leave `fix` with work to do on its next run.
+ */
+export interface ResizeOperation {
+  op: 'resize';
+  from: Dimensions;
+  to: Dimensions;
+  /** The limits that produced `to`. Present only when the policy sets them. */
+  maxWidth?: number;
+  maxHeight?: number;
+  fit: 'inside';
+  /** Always false. Rasterwright never enlarges an image. */
+  upscale: false;
+}
+
+/** Convert the pixels to sRGB. Only planned for a confident non-sRGB error. */
+export interface ColorSpaceOperation {
+  op: 'toColorSpace';
+  space: 'srgb';
+  /** What the image is now, as the ICC profile or libvips describes it. */
+  from: string;
+}
+
+/**
+ * Write the pixels out. Exactly one per rewritten file.
+ *
+ * Metadata stripping is an encoder setting rather than a separate pass, because
+ * that is what it is: Sharp drops ancillary metadata by default and opts back
+ * in per kind. Representing it as its own operation would suggest a second
+ * rewrite that never happens.
+ */
+export interface EncodeOperation {
+  op: 'encode';
+  format: ImageFormat;
+  /** The ceiling the output must satisfy, when the policy sets one. */
+  maxBytes?: number;
+  /**
+   * True when an over-budget file is the *reason* for this encode, as opposed
+   * to a ceiling that merely also applies to a rewrite something else required.
+   */
+  budgetDriven: boolean;
+  /** Quality band for a lossy target. Absent for PNG, which has no quality dial. */
+  quality?: QualityBand;
+  /**
+   * Drop ancillary, non-colour metadata - EXIF, XMP, IPTC, Photoshop tags,
+   * text chunks - as part of this rewrite. ICC profiles are never included:
+   * they are colour management, and stripping one changes how every pixel is
+   * interpreted. Under `colorSpace: srgb` the output is explicitly tagged sRGB.
+   */
+  stripMetadata: boolean;
+  /** The source carries transparency that the output must keep. */
+  preserveAlpha: boolean;
+  /**
+   * Already-lossy pixels are being re-compressed, so generation loss is real.
+   * Allowed only because an error-level finding demanded the rewrite; it is
+   * surfaced rather than presented as a free saving.
+   */
+  lossyReencode: boolean;
+  /**
+   * Planning has not encoded anything, so the resulting size is not known here.
+   * When true, execution must measure the output and fail if it does not fit.
+   */
+  outcomeRequiresVerification: boolean;
+}
+
+/**
+ * Change the filename. Requires `--allow-renames`.
+ *
+ * `reencode: false` is the case worth having a name for: `logo.png` whose bytes
+ * are already WebP needs its extension corrected and nothing else. Decoding and
+ * re-encoding those pixels to fix a filename would be pure loss.
+ */
+export interface RenameOperation {
+  op: 'rename';
+  from: string;
+  to: string;
+  reason: 'format-conversion' | 'extension-correction';
+  /** Whether pixel operations precede this rename. */
+  reencode: boolean;
+}
+
+/**
+ * What a fix run would do to one file.
+ *
+ * - `unchanged`           - nothing to do. No error-level findings.
+ * - `planned`             - a complete plan exists and this run may execute it.
+ * - `requires-permission` - a plan exists but the run lacks permission for it.
+ * - `unfixable`           - no safe transform resolves it (or it cannot be read).
+ * - `unsupported`         - v0 does not transform this kind of image at all.
+ */
+export type FixPlanStatus =
+  | 'unchanged'
+  | 'planned'
+  | 'requires-permission'
+  | 'unfixable'
+  | 'unsupported';
+
+export interface FilePlan {
+  path: string;
+  /** Where the file would end up. Differs from `path` only for a rename. */
+  targetPath: string;
+  status: FixPlanStatus;
+  /**
+   * Operations this run would execute, in order. Empty unless `planned`:
+   * a file whose plan is blocked gets no operations at all, because a plan is
+   * applied coherently or not applied.
+   */
+  operations: PlannedOperation[];
+  /**
+   * The plan that permission would unlock, for `requires-permission`. Reported
+   * so the user can see what they are being asked to authorize. Never executed.
+   */
+  blockedOperations: PlannedOperation[];
+  /** Error-level checks the plan would resolve. */
+  resolves: CheckName[];
+  /** Error-level checks that would still be outstanding afterwards. */
+  unresolved: CheckName[];
+  /**
+   * Warning-level checks that get normalized for free during a rewrite some
+   * error already required. Never a reason to rewrite a file on their own.
+   */
+  normalizedDuringRewrite: CheckName[];
+  /** Warning-level checks present on the file, resolved or not. */
+  warnings: CheckName[];
+  /** True when the outcome depends on encoding results planning cannot know. */
+  requiresVerification: boolean;
+  /** Permissions the plan needs and does not have. */
+  requiredPermissions: FixPermissionName[];
+  /** Why the file is blocked, unfixable or unsupported. Plain language. */
+  reasons: string[];
+  /** Honest caveats about a plan that is otherwise complete. */
+  notes: string[];
+}
+
+export interface FixPlanSummary {
+  /** Governed images that were inspected. */
+  checked: number;
+  planned: number;
+  requiresPermission: number;
+  unfixable: number;
+  unsupported: number;
+  unchanged: number;
+  /** Unchanged files carrying warnings, which a fix deliberately leaves alone. */
+  unchangedWithWarnings: number;
+  /** Total operations across every planned file. */
+  operations: number;
+  /** Image files found but matched by no rule. Silently skipped. */
+  ignored: number;
+}
+
+export interface FixPlanReport {
+  rasterwrightVersion: string;
+  /** Always true in this build. Nothing else exists yet. */
+  dryRun: true;
+  /** Which permissions this run was given. */
+  permissions: FixPermissions;
+  /** True when every error-level finding is covered by an executable plan. */
+  complete: boolean;
+  configPath: string;
+  root: string;
+  summary: FixPlanSummary;
+  /**
+   * Every file that is not `unchanged`. Unchanged files are counted in the
+   * summary and omitted here: `check --json` already describes them, and
+   * repeating it would bury the files a fix would actually touch.
+   */
+  files: FilePlan[];
+}
