@@ -7,7 +7,7 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `2860c4e feat: add read-only fix planning`
+- HEAD: `7974008 feat: add batch plan preflight`
 - Implemented commands: `check` (`--verbose`, `--json`), `fix --dry-run`
   (`--json`, `--allow-renames`). Plain `fix` exits 2: execution not built.
 - Not implemented: `fix` execution, `review`, `init`.
@@ -22,15 +22,18 @@ behaviour in `README.md`; this file only records where the implementation is.
 | Read-only `check` | `a8b3332` |
 | Severity + real-world check refinements | `b3b312b`, `75dbc63` |
 | Read-only `fix --dry-run` (pure planner) | `2860c4e` |
+| Batch plan preflight (`blocked` status, collisions fixture) | `7974008` |
 
 ## Current phase
 
-**Batch plan preflight.** `validatePlanSet(plans, existingPaths, semantics)`
-in `src/operations/plan-set.ts`: same-target collisions, occupied rename
-targets, refused rename chains, unprobeable targets, and case collisions
-where the filesystem folds, all refused conservatively. Integrated into
-`fix --dry-run` so `complete` / exit 0 mean the batch is executable. Status: implemented in the working tree, not yet
-committed. Decisions recorded in `04` section 16.
+**Safe execution foundation.** Filesystem/transaction layer for real
+`fix`: candidate generated in memory, inspected and verified against the
+effective policy, then written to a temp file in the same directory,
+fsynced, atomically renamed over the destination (new path first, then
+unlink old on format conversion). Per-file failure isolation, SIGINT
+cleanup, stale temp cleanup, preserved file mode, bounded concurrency,
+git-dirty warning, `--no-git` / `--backup-dir` outside a repo. No byte
+budget search yet. Status: not started.
 
 ## Non-negotiable invariants
 
