@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Generated test fixtures (see scripts/generate-fixtures.ts).
+# Regenerated automatically by `npm test` or `npm run fixtures`.
+fixtures/images/
+fixtures/projects/*/assets/
+fixtures/projects/*/public/
+fixtures/projects/*/ungoverned/
+
+# Rasterwright's own working directory (not used by `check`, which is read-only)
+.rasterwright/

@@ -1,0 +1,6 @@
+{
+  "images": {
+    "assets/broken.jpg": "corrupt.jpg",
+    "assets/fine.jpg": "compliant.jpg"
+  }
+}

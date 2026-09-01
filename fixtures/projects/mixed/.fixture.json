@@ -1,0 +1,14 @@
+{
+  "images": {
+    "assets/compliant.jpg": "compliant.jpg",
+    "assets/oversized.jpg": "oversized.jpg",
+    "assets/heavy.jpg": "overbudget.jpg",
+    "assets/logo.png": "plain.png",
+    "assets/photo.webp": "sample.webp",
+    "assets/rotated.jpg": "rotated.jpg",
+    "assets/cmyk.jpg": "cmyk.jpg",
+    "assets/heroes/hero.jpg": "compliant.jpg",
+    "assets/icons/logo.png": "transparent.png",
+    "ungoverned/stray.png": "plain.png"
+  }
+}

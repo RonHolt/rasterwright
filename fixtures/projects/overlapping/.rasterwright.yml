@@ -1,0 +1,14 @@
+# Three overlapping globs. Rasterwright merges every match in file order,
+# and a later match overrides only the properties it sets.
+version: 1
+
+rules:
+  "assets/**":
+    maxWidth: 1200
+    maxBytes: 500kb
+
+  "assets/**/*.png":
+    maxBytes: 50kb
+
+  "assets/tiny/**":
+    maxWidth: 100

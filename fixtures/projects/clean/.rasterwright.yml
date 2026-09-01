@@ -1,0 +1,7 @@
+version: 1
+
+rules:
+  "assets/**/*.{jpg,png,webp}":
+    maxWidth: 1200
+    maxHeight: 1200
+    maxBytes: 500kb

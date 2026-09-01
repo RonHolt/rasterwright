@@ -1,0 +1,5 @@
+version: 1
+rules:
+  "assets/**":
+    maxWidth: 1200
+   badly: indented

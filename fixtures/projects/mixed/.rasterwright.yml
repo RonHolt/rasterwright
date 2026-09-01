@@ -1,0 +1,24 @@
+# Rasterwright fixture project: a bit of everything.
+# Byte units are 1024-based: 200kb == 204800 bytes.
+version: 1
+
+defaults:
+  upscale: false
+  stripMetadata: true
+  colorSpace: srgb
+
+rules:
+  # Broad rule. Applies to every governed image under assets/.
+  "assets/**/*.{jpg,jpeg,png,webp}":
+    maxWidth: 1200
+    maxBytes: 200kb
+
+  # Narrower rule, later in the file, so its values win where they overlap.
+  "assets/heroes/**":
+    maxWidth: 800
+    maxBytes: 100kb
+    format: webp
+
+  # Deliberately unsafe target for transparent sources.
+  "assets/icons/**":
+    format: jpeg
