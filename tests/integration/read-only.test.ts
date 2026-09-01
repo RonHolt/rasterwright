@@ -66,6 +66,10 @@ describe('check is read-only', () => {
     await assertReadOnly('broken-config', ['check']);
   });
 
+  it('changes nothing in a project whose plans would collide', async () => {
+    await assertReadOnly('collisions', ['check']);
+  });
+
   it('creates no cache or review directory', async () => {
     const root = copyProject('mixed');
     await runCli(['check'], root);
@@ -147,6 +151,16 @@ describe('fix --dry-run is read-only', () => {
 
   it('changes nothing when the config is malformed', async () => {
     await assertReadOnly('broken-config', ['fix', '--dry-run']);
+  });
+
+  it('changes nothing in a project whose plans would collide', async () => {
+    // Preflight is the one step that reads paths outside the scan, via lstat.
+    // Probing a name must not create it, and must not touch the occupant.
+    await assertReadOnly('collisions', ['fix', '--dry-run']);
+  });
+
+  it('changes nothing when a collision is discovered with --allow-renames', async () => {
+    await assertReadOnly('collisions', ['fix', '--dry-run', '--allow-renames']);
   });
 
   it('changes nothing when fix is invoked without --dry-run', async () => {

@@ -513,6 +513,7 @@ A compliant file is never re-encoded. A file is never encoded twice in one run.
 | `unchanged` | Nothing to do. No error-level findings. |
 | `planned` | A complete plan exists and this run could execute it. |
 | `requires-permission` | A plan exists, but the run lacks permission for it. |
+| `blocked` | The plan is complete and permitted, but its output path collides with another plan or with something that already exists. A blocked file can carry more than one conflict. |
 | `unfixable` | No safe transform resolves it, or the image could not be decoded. |
 | `unsupported` | v0 does not transform this kind of image at all (today: animated). |
 
@@ -594,16 +595,60 @@ re-encode worth a few percent; palette quantization is deliberately not in v0
 because it wrecks photographs. An arbitrary PNG byte budget may simply be
 unreachable, and the plan says so rather than implying success.
 
-### What a plan has not checked
+### The whole batch is checked, not just each file
 
 Planning is per file and reads nothing beyond that file's own inspection
-result. It therefore does not know about the other files in the run or about
-the filesystem, so it cannot yet detect two files planning a rename to the same
-path, or a rename target that already exists on disk. Validating a whole plan
-set against the repository is execution's preflight step, and it is not built.
+result. Two plans that are each perfectly correct can still destroy a file
+between them, so the plan set gets a **preflight** pass before anything is
+reported. It catches:
 
-Treat a dry-run plan as "this is what Rasterwright intends", not "this is
-guaranteed to apply cleanly".
+| Conflict | Example |
+|---|---|
+| `duplicate-target` | `hero.jpg` and `hero.png` both converting to `hero.webp`. |
+| `target-exists` | `logo.png` holding WebP bytes being renamed onto a `logo.webp` that already exists. |
+| `source-claimed` | Another plan would rename onto *this* file's current path while this file moves away. |
+| `target-unreadable` | The target path could not be checked at all, so whether it is free is unknown. |
+
+```
+BLOCKED
+
+⊗ assets/hero.jpg
+
+    encode        WebP
+    quality       82
+    re-encode     lossy source re-encoded; some generation loss
+    rename        .jpg -> .webp
+    path          assets/hero.webp
+    conflict      assets/hero.png is renamed to assets/hero.webp, so assets/hero.webp is claimed by more than one plan
+```
+
+Every plan involved is marked `blocked`. Rasterwright does not pick a winner
+between two plans claiming one path, and it does not order renames so a chain
+can thread itself through - `A.png -> A.webp` while `A.webp -> A.jpg` blocks
+both ends. Sequencing would work right up until the run is interrupted halfway,
+and then a file is gone with no record of where it went. A refused batch costs
+one rerun after a rename; a lost image is permanent.
+
+Occupancy is read from two places, and nothing else touches the disk: the file
+list `check` already walked, plus one `lstat` per rename target that list did
+not cover. The second matters because a target need not be an image - a
+directory, a symlink or a `.txt` file holds the name just as firmly.
+
+A probe that fails is not a probe that passed. "Nothing is there" is the one
+answer that frees the path; every other errno - `EACCES` on an unreadable
+parent, `ENOTDIR`, `ELOOP`, `ENAMETOOLONG` when the new extension pushes the
+filename past the limit - blocks the plan with the errno named, and prints a
+diagnostic on stderr rather than a stack trace.
+
+On macOS and Windows, paths are compared with case folded, so `Hero.webp` and
+`hero.webp` collide. That is deliberately not symmetrical with glob matching,
+which is case-sensitive on macOS and Linux (see "Glob case sensitivity follows
+the platform"): matching the wrong file is a reporting bug, and overwriting the
+wrong file is data loss.
+
+A file waiting on `--allow-renames` has no rename yet, so it has nothing to
+collide with. **Granting `--allow-renames` can therefore surface conflicts an
+earlier run had no way to report.** That is the flag working, not a regression.
 
 ### A lossy re-encode is stated, not hidden
 
@@ -632,6 +677,7 @@ describes them and repeating it would bury the files a fix would touch.
     "checked": 75,
     "planned": 3,
     "requiresPermission": 1,
+    "blocked": 0,
     "unfixable": 0,
     "unsupported": 0,
     "unchanged": 71,
@@ -639,6 +685,7 @@ describes them and repeating it would bury the files a fix would touch.
     "operations": 4,
     "ignored": 1
   },
+  "conflicts": [],
   "files": [
     {
       "path": "assets/src/images/nolanville_skinny-scaled.jpg",
@@ -681,8 +728,30 @@ describes them and repeating it would bury the files a fix would touch.
 ```
 
 `complete` is `true` when every error-level finding is covered by a plan this
-run could actually execute - nothing blocked, unfixable or unsupported. It is
-what the exit code is derived from. Warnings are irrelevant to it.
+run could actually execute - nothing waiting on permission, blocked by a path
+conflict, unfixable or unsupported. It is what the exit code is derived from.
+Warnings are irrelevant to it.
+
+`conflicts` is empty when the batch is executable. Each entry corresponds to
+one `blocked` file and names what it collided with:
+
+```json
+{
+  "path": "assets/hero.png",
+  "targetPath": "assets/hero.webp",
+  "kind": "duplicate-target",
+  "caseOnly": false,
+  "with": ["assets/hero.jpg"],
+  "message": "assets/hero.jpg is renamed to assets/hero.webp, so assets/hero.webp is claimed by more than one plan"
+}
+```
+
+`caseOnly` is `true` when the paths collide only because the filesystem folds
+case. `with` names the competing plans, or the file already occupying the path.
+`targetPath` is the path that collided, which for `source-claimed` is the
+blocked plan's own current path rather than its output. One file can appear
+more than once: a pair of renames that swap places collides in two different
+ways at once.
 
 `resolves` and `unresolved` name the checks a plan would and would not clear.
 `normalizedDuringRewrite` names warnings that get cleaned up for free on the
@@ -698,7 +767,7 @@ One model, both commands. Warnings never produce a non-zero exit.
 | Code | `check` | `fix --dry-run` |
 |---|---|---|
 | `0` | No error-level findings. | Every error is covered by a plan this run could execute (or there are none). |
-| `1` | At least one error. | At least one file is left unresolved: blocked on permission, unfixable, or unsupported. |
+| `1` | At least one error. | At least one file is left unresolved: waiting on permission, blocked by a path conflict, unfixable, or unsupported. |
 | `2` | Configuration or runtime error. Nothing was checked. | Same. Plain `fix` without `--dry-run` also exits `2`. |
 
 An unreadable image is an exit `1`, not a `0`: it is a file that is supposed to

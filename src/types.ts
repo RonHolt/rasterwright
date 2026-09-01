@@ -418,6 +418,10 @@ export interface RenameOperation {
  * - `unchanged`           - nothing to do. No error-level findings.
  * - `planned`             - a complete plan exists and this run may execute it.
  * - `requires-permission` - a plan exists but the run lacks permission for it.
+ * - `blocked`             - the plan is complete and permitted, but its output
+ *                           path collides with another plan or with a file that
+ *                           already exists. Only batch preflight can see this;
+ *                           `planFile()` is file-local by design.
  * - `unfixable`           - no safe transform resolves it (or it cannot be read).
  * - `unsupported`         - v0 does not transform this kind of image at all.
  */
@@ -425,6 +429,7 @@ export type FixPlanStatus =
   | 'unchanged'
   | 'planned'
   | 'requires-permission'
+  | 'blocked'
   | 'unfixable'
   | 'unsupported';
 
@@ -440,8 +445,9 @@ export interface FilePlan {
    */
   operations: PlannedOperation[];
   /**
-   * The plan that permission would unlock, for `requires-permission`. Reported
-   * so the user can see what they are being asked to authorize. Never executed.
+   * The plan that permission would unlock, for `requires-permission`, or the
+   * plan a path collision refused, for `blocked`. Reported so the user can see
+   * what they are being asked to authorize or resolve. Never executed.
    */
   blockedOperations: PlannedOperation[];
   /** Error-level checks the plan would resolve. */
@@ -465,11 +471,48 @@ export interface FilePlan {
   notes: string[];
 }
 
+/**
+ * Why batch preflight refused a plan. See `operations/plan-set.ts`.
+ *
+ * - `duplicate-target`  - two or more plans in this run claim one output path.
+ * - `target-exists`     - a rename would land on a path that already exists.
+ * - `source-claimed`    - another plan's rename would land on *this* plan's
+ *                         current path. Sequencing the two would work, and
+ *                         Rasterwright refuses to sequence renames.
+ * - `target-unreadable` - the target path could not be probed at all, so
+ *                         whether it is free is unknown.
+ */
+export type ConflictKind =
+  | 'duplicate-target'
+  | 'target-exists'
+  | 'source-claimed'
+  | 'target-unreadable';
+
+export interface PlanSetConflict {
+  /** The plan that is blocked, by its current path. */
+  path: string;
+  /**
+   * The path that collided. Usually the plan's output path; for
+   * `source-claimed` it is the plan's own current path, which is what another
+   * plan is trying to write.
+   */
+  targetPath: string;
+  kind: ConflictKind;
+  /** The paths collide only once folded for a case-insensitive filesystem. */
+  caseOnly: boolean;
+  /** The other paths involved: competing plans, or the occupying file. */
+  with: string[];
+  /** A sentence naming what collided, suitable for a report. */
+  message: string;
+}
+
 export interface FixPlanSummary {
   /** Governed images that were inspected. */
   checked: number;
   planned: number;
   requiresPermission: number;
+  /** Plans refused by batch preflight because their output path collides. */
+  blocked: number;
   unfixable: number;
   unsupported: number;
   unchanged: number;
@@ -492,6 +535,11 @@ export interface FixPlanReport {
   configPath: string;
   root: string;
   summary: FixPlanSummary;
+  /**
+   * Path collisions batch preflight found across the whole plan set. Empty when
+   * the batch is executable. Every conflict corresponds to a `blocked` file.
+   */
+  conflicts: PlanSetConflict[];
   /**
    * Every file that is not `unchanged`. Unchanged files are counted in the
    * summary and omitted here: `check --json` already describes them, and

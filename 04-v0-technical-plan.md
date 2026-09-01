@@ -813,3 +813,135 @@ planning   outcome uncertain
 execution  attempt, then verify
 failure    original untouched, reported
 ```
+
+## 16. Decisions from implementing batch plan preflight
+
+Added 2026-09-01, immediately after section 15. This builds 15.9 and supersedes
+its "not implemented" note; it does not change anything else.
+
+**1. `blocked` is a sixth `FilePlan` status, not a flag on `planned`.** A plan
+that preflight refused is not a plan this run could execute, and every consumer
+that asks "can this run" - `complete`, the exit code, the summary counts, the
+report sections - has to get the same answer. Modelling it as a status means
+none of them can forget to check a boolean. Its shape mirrors
+`requires-permission` exactly: `operations: []`, the refused plan preserved in
+`blockedOperations`, `resolves: []`, `unresolved` holding what it would have
+cleared, and `reasons` carrying a sentence that names the colliding path.
+`requiredPermissions` is untouched, because a collision is not a permission
+problem and rerunning with a flag will not fix it.
+
+`validatePlanSet(plans, existingPaths, semantics)` lives in
+`operations/plan-set.ts`, is pure, imports no `node:fs`, mutates nothing, and
+returns plans in input order. It is the only part of planning that sees more
+than one file, and it is testable entirely with string arrays.
+
+**2. Only a `planned` plan claims a path or can be blocked.** A
+`requires-permission` file has a `targetPath` but is not going to write to it,
+so it cannot collide with anything, and neither can `unchanged`, `unfixable` or
+`unsupported`. An in-place `planned` rewrite claims its own path, which is what
+makes "rename onto a file another plan is rewriting" a `duplicate-target`
+rather than something that slips through.
+
+**3. Conservative refusal, always, including chains.** Two plans claiming one
+target block both - there is no defensible way to pick a winner, and writing one
+of them leaves the run in a state neither plan described. A rename onto an
+existing path blocks, even when the occupant is another plan's source that would
+move away first (`A.png -> A.webp` while `A.webp -> A.jpg`). Ordering those two
+renames would work right up until the run is interrupted between them, and then
+a file is gone with no record of where it went. Rasterwright does not sequence
+renames. A refused batch costs one rerun after a rename; a lost image is
+permanent.
+
+**4. darwin and win32 fold case for collisions, even though glob matching does
+not.** Section 14 fixed glob matching as case-sensitive on macOS and Linux
+(Windows matching stays case-insensitive) so a report is reproducible across
+machines. Collision detection goes the other way:
+on macOS and Windows, `Hero.webp` and `hero.webp` are one file, so both are
+compared folded and a case-only collision blocks. The asymmetry is deliberate
+and the two cases are not the same kind of mistake - matching the wrong file is
+a reporting bug, and overwriting the wrong file is data loss. Folding on a
+case-sensitive volume that happens to be mounted on macOS only ever refuses a
+batch that would have worked, which is the safe direction to be wrong in.
+`caseOnly` on each conflict records that the collision needed folding, so the
+message can say so.
+
+**5. Existing paths come from the scan plus one `lstat` per uncovered target.**
+Discovery already walked the tree, so every image file in the project is known
+for free; `RunCheckResult` exposes it as `discovered`. It is deliberately *not*
+on `CheckReport` - it is not a finding, and `check --json` is a published shape
+that must not move. The scan is not sufficient on its own, because a rename
+target need not be an image: a directory, a symlink, a git-ignored file or a
+`.txt` all occupy the name. So every planned rename target the scan did not
+already cover gets one `fs.lstatSync(abs, { throwIfNoEntry: false })`. `lstat`
+rather than `stat`, so a dangling symlink counts as occupied - resolving the
+link would report the name as free and then clobber the link itself.
+
+That probe is the only filesystem access planning adds beyond `check`. It opens
+nothing, and `fix --dry-run` remains read-only under the same snapshot tests.
+
+**6. Preflight feeds `complete`, so exit codes stay meaningful.** `blocked` is
+added to `FixPlanSummary` and joins `requiresPermission`, `unfixable` and
+`unsupported` in the `complete` calculation, so `fix --dry-run` exiting 0 keeps
+meaning "this whole batch could be executed" rather than "each file looked fine
+on its own". The full conflict list is exposed as `conflicts` on the JSON
+report; the human report gets a `BLOCKED` section after `REQUIRES PERMISSION`.
+
+**7. A failed probe is not a free path.** `throwIfNoEntry: false` turns the
+one answer that frees a path - "nothing is there" - into `undefined`. Every
+other errno still throws, and none of them mean free: `EACCES` on an unreadable
+parent directory, `ENOTDIR`, `ELOOP`, `ENAMETOOLONG` when swapping the
+extension pushes the filename past the filesystem's limit. Each blocks its plan
+under a `target-unreadable` conflict that names the errno, and adds a stderr
+diagnostic. Nothing escapes as a stack trace.
+
+Under case-insensitive semantics a successful probe is followed by a read-only
+`readdir` of the parent directory, so the spelling recorded is the one the disk
+actually holds. `lstat('a/LOGO.WEBP')` succeeds against a stored `a/logo.webp`,
+and recording the requested spelling would report a case-only collision as an
+exact one. If the `readdir` fails the requested spelling is used and the path is
+still treated as occupied; only the wording suffers.
+
+**8. Four conflict kinds, and a plan may carry several.** `duplicate-target`
+and `target-exists` are the two from 15.9. `source-claimed` is the far end of a
+refused chain: its own target is free, but another plan would rename onto its
+current path, so its conflict names *that* path rather than its output.
+`target-unreadable` is the failed probe above. A two-cycle (`a.png -> b.webp`
+while `b.webp -> a.png`) genuinely collides in two ways from each end, so
+conflicts are deduplicated by `(path, kind, with)` rather than collapsed to one
+per file.
+
+Conflict messages name each competing plan with its *own* target path, because
+under folding those spellings differ and printing the blocked plan's spelling
+would send the reader to a file that does not exist. An in-place rewrite is
+described as one rather than as a second rename.
+
+**9. Case folding is `toLowerCase()` and nothing more.** No Unicode NFC/NFD
+normalization. Both sides of every comparison originate in the same directory
+listing, so a path stored as NFD is compared against a target derived from that
+same NFD string and the byte sequences already agree. Normalizing would
+introduce a transformation neither the filesystem nor the config performed, and
+HFS+ and APFS do not agree with each other about which form to store.
+
+**10. A blocked plan clears everything that only happens while executing.**
+`operations`, `resolves`, `requiresVerification` and `normalizedDuringRewrite`
+are all emptied, exactly as `planFile()` does for `requires-permission`. Both
+execute nothing, so neither may claim an encode to verify or a warning swept up
+along the way. `blockedOperations` keeps the refused plan so the collision is
+legible, and `requiredPermissions` is untouched - a collision is not a
+permission problem and rerunning with a flag will not fix it.
+
+**11. `ruleGlobExcludesTargetFormat` considers every glob, not the matched
+ones.** Found while checking the note preflight repeats. A policy of
+`"assets/*.png": {format: webp}` plus `"assets/*.webp": {...}` converts
+`hero.png` into a file the second rule governs, but that rule never matched
+`hero.png`, so answering from `matchedGlobs` claimed the file was leaving
+policy. `RuleContext` gained `allGlobs`; `evaluate()` takes it as an optional
+third argument defaulting to the matched globs, which is the honest answer for
+a caller that knows nothing else.
+
+**12. Granting `--allow-renames` can surface new conflicts.** A file waiting on
+permission has no rename, so it has nothing to collide with. The first run that
+grants the flag is therefore the first run that can see the collision, and the
+report says so explicitly rather than letting it read as a regression. This is
+also why `BLOCKED` sits directly after `REQUIRES PERMISSION`: it is the section
+that appears when the previous one is granted.

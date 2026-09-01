@@ -28,6 +28,10 @@ export function renderPlanHuman(report: FixPlanReport): string {
   lines.push(
     ...section('REQUIRES PERMISSION', report.files.filter((plan) => plan.status === 'requires-permission')),
   );
+  // After REQUIRES PERMISSION on purpose: a collision is only ever discovered
+  // once a rename is allowed, so this is the section that appears when the
+  // previous one is granted.
+  lines.push(...section('BLOCKED', report.files.filter((plan) => plan.status === 'blocked')));
   lines.push(
     ...section(
       'CANNOT FIX',
@@ -62,6 +66,7 @@ function section(heading: string, plans: readonly FilePlan[]): string[] {
 const MARKER: Record<FilePlan['status'], string> = {
   planned: '→',
   'requires-permission': '⊘',
+  blocked: '⊗',
   unfixable: '✗',
   unsupported: '✗',
   unchanged: '·',
@@ -71,9 +76,10 @@ function renderPlan(plan: FilePlan): string[] {
   const lines: string[] = [`${MARKER[plan.status]} ${plan.path}`, ''];
   const body: string[] = [];
 
-  // A blocked file shows the plan it is waiting on. Seeing "rename .png ->
-  // .webp, no re-encode required" is what makes granting permission a decision
-  // rather than a leap.
+  // A file that is not going to be touched still shows the plan it is waiting
+  // on. Seeing "rename .png -> .webp, no re-encode required" is what makes
+  // granting permission a decision rather than a leap, and it is what makes a
+  // path collision legible rather than an assertion.
   const operations = plan.status === 'planned' ? plan.operations : plan.blockedOperations;
   for (const operation of operations) body.push(...renderOperation(operation));
 
@@ -96,7 +102,9 @@ function renderPlan(plan: FilePlan): string[] {
 }
 
 function labelFor(plan: FilePlan): string {
-  return plan.status === 'requires-permission' ? 'blocked' : 'reason';
+  if (plan.status === 'requires-permission') return 'blocked';
+  if (plan.status === 'blocked') return 'conflict';
+  return 'reason';
 }
 
 function renderOperation(operation: PlannedOperation): string[] {
@@ -185,6 +193,11 @@ function renderSummary(report: FixPlanReport): string[] {
       `${plural(summary.requiresPermission, 'file')} ${summary.requiresPermission === 1 ? 'requires' : 'require'} permission`,
     );
   }
+  if (summary.blocked > 0) {
+    lines.push(
+      `${plural(summary.blocked, 'file')} blocked by a path conflict`,
+    );
+  }
   if (summary.unfixable > 0) {
     lines.push(`${plural(summary.unfixable, 'file')} cannot be fixed safely`);
   }
@@ -207,6 +220,15 @@ function renderSummary(report: FixPlanReport): string[] {
   lines.push('Nothing was written. This is a plan, not a run.');
   if (!report.permissions.allowRenames && report.summary.requiresPermission > 0) {
     lines.push('Rerun with --allow-renames to plan the filename changes above.');
+  }
+  if (report.summary.blocked > 0) {
+    // Worth saying out loud: a file waiting on permission has no target path
+    // yet, so its collision cannot be reported. Granting --allow-renames is
+    // what makes these visible, and finding more problems is the flag working.
+    lines.push(
+      'A path conflict is only visible once a rename is permitted, so --allow-renames',
+      'can surface conflicts an earlier run had no way to report.',
+    );
   }
   lines.push('Executing a plan is not implemented yet.');
 

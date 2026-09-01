@@ -217,6 +217,51 @@ rules:
     const result = evaluate(image({ path: 'assets/hero.png', format: 'png' }), resolved);
     expect(result.findings.map((f) => f.check)).not.toContain('ruleGlobExcludesTargetFormat');
   });
+
+  it('stays quiet when a different rule picks the file up after the rename', () => {
+    // The webp rule does not match `hero.png`, so it is not among the matched
+    // globs - but it is exactly what governs the file once it is `hero.webp`.
+    // Answering from the matched globs alone would claim the file left policy.
+    const policy = parsePolicy(
+      parseYaml(`
+version: 1
+rules:
+  "assets/**/*.{jpg,jpeg,png}":
+    format: webp
+  "assets/**/*.webp":
+    maxWidth: 1200
+`),
+    );
+    const resolver = createResolver(policy);
+    const result = evaluate(
+      image({ path: 'assets/hero.png', format: 'png' }),
+      resolver.resolve('assets/hero.png'),
+      resolver.globs(),
+    );
+
+    expect(result.findings.map((f) => f.check)).not.toContain('ruleGlobExcludesTargetFormat');
+  });
+
+  it('still notes it when no rule in the whole policy covers the target', () => {
+    const policy = parsePolicy(
+      parseYaml(`
+version: 1
+rules:
+  "assets/**/*.{jpg,jpeg,png}":
+    format: webp
+  "vendor/**/*.webp":
+    maxWidth: 1200
+`),
+    );
+    const resolver = createResolver(policy);
+    const result = evaluate(
+      image({ path: 'assets/hero.png', format: 'png' }),
+      resolver.resolve('assets/hero.png'),
+      resolver.globs(),
+    );
+
+    expect(result.findings.map((f) => f.check)).toContain('ruleGlobExcludesTargetFormat');
+  });
 });
 
 describe('extension versus contents', () => {

@@ -46,8 +46,9 @@ import type {
  * Purity also bounds what a plan can be trusted to have checked. A file-local
  * planner cannot see the other files in the run or the filesystem, so it cannot
  * detect two plans renaming to the same path, or a rename target that already
- * exists. Those belong to a batch preflight over the whole plan set, which does
- * not exist yet (04, section 15.9).
+ * exists. Those belong to a batch preflight over the whole plan set, which runs
+ * after this module and can reject what it produces: see `plan-set.ts` and 04,
+ * sections 15.9 and 16. A plan is not executable until preflight has seen it.
  */
 
 export function planFile(file: FileResult, permissions: FixPermissions): FilePlan {

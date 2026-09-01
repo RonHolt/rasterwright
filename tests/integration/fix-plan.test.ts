@@ -221,6 +221,139 @@ describe('--allow-renames', () => {
   });
 });
 
+/**
+ * Preflight over the whole plan set.
+ *
+ * Every file in the `collisions` project has a plan that is correct on its own.
+ * The batch is still unsafe, and only a step that sees all of them at once can
+ * say so.
+ */
+describe('batch preflight', () => {
+  /**
+   * 251 characters, so `.jpg` fits inside the 255-byte filename limit and the
+   * `.webp` the policy asks for does not. The existence probe cannot answer.
+   */
+  const TOO_LONG = `assets/toolong-${'x'.repeat(243)}.jpg`;
+
+  it('refuses a batch whose plans collide, even though every plan is valid', async () => {
+    const { code, report } = await planJson('collisions', ['--allow-renames']);
+
+    expect(code).toBe(1);
+    expect(report.complete).toBe(false);
+    expect(report.summary).toMatchObject({ checked: 6, planned: 0, blocked: 5, unchanged: 1 });
+  });
+
+  it('blocks a target it could not probe, and says which errno stopped it', async () => {
+    // A probe that fails is not a probe that passed. Anything but ENOENT means
+    // Rasterwright does not know whether the path is free.
+    const root = copyProject('collisions');
+    const result = await runCli(['fix', '--dry-run', '--json', '--allow-renames'], root);
+    const report = JSON.parse(result.stdout) as JsonPlanReport;
+    const plan = planFor(report, TOO_LONG);
+
+    expect(result.code).toBe(1);
+    expect(plan.status).toBe('blocked');
+    expect(plan.reasons.join(' ')).toMatch(/could not be checked \(ENAMETOOLONG\)/);
+    expect(result.stderr).toMatch(/ENAMETOOLONG/);
+    expect(result.stderr).toMatch(/blocked rather than assumed safe/);
+    // Never a stack trace.
+    expect(result.stderr).not.toMatch(/at .*\.ts:/);
+  });
+
+  it('blocks both files when two sources converge on one target', async () => {
+    const { report } = await planJson('collisions', ['--allow-renames']);
+
+    for (const [path, other] of [
+      ['assets/hero.jpg', 'assets/hero.png'],
+      ['assets/hero.png', 'assets/hero.jpg'],
+    ] as const) {
+      const plan = planFor(report, path);
+      expect(plan.status).toBe('blocked');
+      expect(plan.targetPath).toBe('assets/hero.webp');
+      expect(plan.operations).toEqual([]);
+      expect(plan.reasons.join(' ')).toContain(other);
+    }
+  });
+
+  it('blocks an extension correction onto an existing sibling', async () => {
+    const { report } = await planJson('collisions', ['--allow-renames']);
+    const plan = planFor(report, 'assets/logo.png');
+
+    expect(plan.status).toBe('blocked');
+    expect(plan.targetPath).toBe('assets/logo.webp');
+    // The plan it refused is still reported, so the collision is legible.
+    expect(plan.blockedOperations.map((operation) => operation.op)).toEqual(['rename']);
+    expect(plan.reasons.join(' ')).toMatch(/assets\/logo\.webp already exists/);
+  });
+
+  it('blocks a rename onto a directory, which no image scan would find', async () => {
+    // `assets/dir/icon.webp` is a directory. Only the lstat probe sees it.
+    const { report } = await planJson('collisions', ['--allow-renames']);
+    const plan = planFor(report, 'assets/dir/icon.jpg');
+
+    expect(plan.status).toBe('blocked');
+    expect(plan.reasons.join(' ')).toMatch(/assets\/dir\/icon\.webp already exists/);
+  });
+
+  it('leaves the file it is colliding with alone', async () => {
+    const { report } = await planJson('collisions', ['--allow-renames']);
+    expect(report.files.some((file) => file.path === 'assets/logo.webp')).toBe(false);
+  });
+
+  it('reports each conflict in the JSON, keyed to the plan it blocked', async () => {
+    const { report } = await planJson('collisions', ['--allow-renames']);
+
+    expect(report.conflicts.map((conflict) => [conflict.path, conflict.kind])).toEqual([
+      ['assets/dir/icon.jpg', 'target-exists'],
+      ['assets/hero.jpg', 'duplicate-target'],
+      ['assets/hero.png', 'duplicate-target'],
+      ['assets/logo.png', 'target-exists'],
+      [TOO_LONG, 'target-unreadable'],
+    ]);
+    expect(report.conflicts.every((conflict) => conflict.caseOnly === false)).toBe(true);
+  });
+
+  it('cannot see any of it while the files are only waiting on permission', async () => {
+    // A file with no permission to rename has no rename to collide. This is why
+    // granting --allow-renames can surface conflicts a previous run never
+    // reported: the flag is working, not regressing.
+    const { code, report } = await planJson('collisions');
+
+    expect(code).toBe(1);
+    expect(report.summary).toMatchObject({ requiresPermission: 5, blocked: 0 });
+    expect(report.conflicts).toEqual([]);
+    for (const path of ['assets/hero.jpg', 'assets/hero.png', 'assets/logo.png', 'assets/dir/icon.jpg']) {
+      expect(planFor(report, path).status).toBe('requires-permission');
+    }
+  });
+
+  it('shows the conflicts in their own section of the human report', async () => {
+    const root = copyProject('collisions');
+    const { stdout } = await runCli(['fix', '--dry-run', '--allow-renames'], root);
+
+    expect(stdout).toMatch(/^BLOCKED$/m);
+    expect(stdout).toMatch(/⊗ assets\/hero\.jpg/);
+    expect(stdout).toMatch(
+      /conflict\s+assets\/hero\.png is renamed to assets\/hero\.webp, so assets\/hero\.webp is claimed by more than one plan/,
+    );
+    expect(stdout).toMatch(/conflict\s+assets\/logo\.webp already exists/);
+    expect(stdout).toMatch(/5 files blocked by a path conflict/);
+    expect(stdout).toMatch(/only visible once a rename is permitted/);
+  });
+
+  it('reports permission first, and the conflict only once permission is given', async () => {
+    const root = copyProject('collisions');
+
+    const withheld = await runCli(['fix', '--dry-run'], root);
+    expect(withheld.stdout).toMatch(/^REQUIRES PERMISSION$/m);
+    expect(withheld.stdout).not.toMatch(/^BLOCKED$/m);
+
+    const granted = await runCli(['fix', '--dry-run', '--allow-renames'], root);
+    expect(granted.stdout).toMatch(/^BLOCKED$/m);
+    expect(granted.stdout).not.toMatch(/^REQUIRES PERMISSION$/m);
+  });
+});
+
 describe('json plan', () => {
   it('puts JSON on stdout and diagnostics on stderr', async () => {
     const root = copyProject('mixed');
@@ -242,6 +375,7 @@ describe('json plan', () => {
       checked: 15,
       planned: 4,
       requiresPermission: 2,
+      blocked: 0,
       unfixable: 1,
       unsupported: 0,
       unchanged: 8,
@@ -321,6 +455,12 @@ describe('json plan', () => {
     expect(broken.status).toBe('unfixable');
     expect(broken.operations).toEqual([]);
     expect(broken.reasons.join(' ')).toMatch(/could not decode image/);
+  });
+
+  it('carries an empty conflicts list when the batch is executable', async () => {
+    const { report } = await planJson('maxheight');
+    expect(report.conflicts).toEqual([]);
+    expect(report.summary.blocked).toBe(0);
   });
 
   it('respects autoOrient: false', async () => {

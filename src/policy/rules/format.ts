@@ -23,7 +23,7 @@ import { FORMAT_LABEL, hasMeaningfulAlpha, info, type RuleContext, sourceOf } fr
  * per-run authorization (`--allow-renames`) before renaming anything.
  */
 export function checkFormat(ctx: RuleContext): Finding[] {
-  const { info: image, body, matchedGlobs } = ctx;
+  const { info: image, body, allGlobs } = ctx;
   const findings: Finding[] = [];
 
   // Animation is genuinely exceptional and changes what v0 will do, so unlike
@@ -37,10 +37,15 @@ export function checkFormat(ctx: RuleContext): Finding[] {
 
   const owningGlob = sourceOf(ctx, 'format');
 
-  // A rule that converts to a format its own glob cannot match produces a file
-  // that silently leaves policy. Worth saying out loud, violation or not.
+  // A conversion whose output matches no rule at all produces a file that
+  // silently leaves policy. Worth saying out loud, violation or not.
   // (04, section 4, precondition 3.)
-  if (owningGlob !== '(defaults)' && !matchedGlobs.some((glob) => globCoversTargetFormat(glob, image.path, target))) {
+  //
+  // Every glob is considered, not just the ones that matched: a rule written
+  // for the target format governs the file only *after* the rename, so asking
+  // `matchedGlobs` would report a file as leaving policy when it is landing in
+  // a different part of it.
+  if (owningGlob !== '(defaults)' && !allGlobs.some((glob) => globCoversTargetFormat(glob, image.path, target))) {
     findings.push(
       info(
         ctx,

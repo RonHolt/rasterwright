@@ -1,0 +1,11 @@
+{
+  "images": {
+    "assets/hero.jpg": "compliant.jpg",
+    "assets/hero.png": "plain.png",
+    "assets/logo.png": "webp-named-png.png",
+    "assets/logo.webp": "sample.webp",
+    "assets/dir/icon.jpg": "compliant.jpg",
+    "assets/dir/icon.webp/placeholder.png": "plain.png",
+    "assets/toolong-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.jpg": "compliant.jpg"
+  }
+}

@@ -6,6 +6,16 @@ export interface RuleContext {
   body: RuleBody;
   sources: EffectiveRule['sources'];
   matchedGlobs: string[];
+  /**
+   * Every glob in the policy, in file order - not just the ones that matched.
+   *
+   * Only one check needs it: asking whether a *renamed* file would still be
+   * governed has to consider rules that do not match the file's current name.
+   * A policy of `"assets/*.png": {format: webp}` plus `"assets/*.webp": {...}`
+   * converts `hero.png` into a file the second rule governs, and answering
+   * from `matchedGlobs` alone would wrongly claim it left policy.
+   */
+  allGlobs: string[];
 }
 
 /** Which rule glob supplied a property's value, for finding attribution. */

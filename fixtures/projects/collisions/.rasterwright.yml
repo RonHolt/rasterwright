@@ -1,0 +1,20 @@
+# Every way a plan set can collide with itself or with the repository.
+#
+# `format: webp` is what makes the collisions possible: it renames files, and a
+# rename is the only operation that can land on top of something else.
+version: 1
+
+rules:
+  # hero.jpg and hero.png both become hero.webp. logo.png holds WebP bytes and
+  # needs its extension corrected onto a name logo.webp already occupies. The
+  # toolong-* file has a 251-character basename, so swapping .jpg for .webp
+  # pushes its target one byte past the 255-byte filename limit and the
+  # existence probe fails with ENAMETOOLONG instead of answering.
+  "assets/*.{jpg,png,webp}":
+    format: webp
+    maxWidth: 1200
+
+  # icon.jpg would become icon.webp, which is a directory here.
+  "assets/dir/*.{jpg,png,webp}":
+    format: webp
+    maxWidth: 1200

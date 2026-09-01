@@ -26,12 +26,22 @@ const CHECKS = [
   checkOrientation,
 ] as const satisfies readonly ((ctx: RuleContext) => Finding[])[];
 
-export function evaluate(info: ImageInfo, rule: EffectiveRule): FileResult {
+/**
+ * `allGlobs` defaults to the globs that matched, which is the honest answer
+ * when a caller has nothing else to offer: those are the only rules it knows
+ * about. Production always passes the whole policy.
+ */
+export function evaluate(
+  info: ImageInfo,
+  rule: EffectiveRule,
+  allGlobs: string[] = rule.matchedGlobs,
+): FileResult {
   const ctx: RuleContext = {
     info,
     body: rule.body,
     sources: rule.sources,
     matchedGlobs: rule.matchedGlobs,
+    allGlobs,
   };
 
   const findings = dedupe(CHECKS.flatMap((check) => check(ctx)));

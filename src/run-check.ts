@@ -25,6 +25,15 @@ export interface RunCheckOptions {
 
 export interface RunCheckResult {
   report: CheckReport;
+  /**
+   * Every image path discovery found, governed or not, repo-relative POSIX.
+   *
+   * Deliberately not on `CheckReport`: it is not a finding, and `check --json`
+   * is a published shape. Fix planning needs it as the cheap half of "which
+   * paths already exist" during batch preflight - the scan already walked the
+   * tree, so reusing it costs nothing and touches no file.
+   */
+  discovered: string[];
   /** Non-fatal facts about the run, for stderr / JSON consumers. */
   diagnostics: string[];
 }
@@ -79,7 +88,7 @@ export async function runCheck(
           error: result.error,
         };
       }
-      return evaluate(result.info, resolver.resolve(relativePath));
+      return evaluate(result.info, resolver.resolve(relativePath), resolver.globs());
     },
   );
 
@@ -112,5 +121,5 @@ export async function runCheck(
     files,
   };
 
-  return { report, diagnostics };
+  return { report, discovered: discovery.files, diagnostics };
 }
