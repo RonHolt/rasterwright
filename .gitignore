@@ -4,10 +4,12 @@ dist/
 
 # Generated test fixtures (see scripts/generate-fixtures.ts).
 # Regenerated automatically by `npm test` or `npm run fixtures`.
+# Fixture projects keep only their config and manifest in git; their image
+# files are materialized from fixtures/images at test time.
 fixtures/images/
-fixtures/projects/*/assets/
-fixtures/projects/*/public/
-fixtures/projects/*/ungoverned/
+fixtures/projects/*/**
+!fixtures/projects/*/.rasterwright.yml
+!fixtures/projects/*/.fixture.json
 
 # Rasterwright's own working directory (not used by `check`, which is read-only)
 .rasterwright/

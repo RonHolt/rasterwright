@@ -1,47 +1,52 @@
-import type { Note, Violation } from '../../types.js';
-import { type RuleContext, type RuleOutcome, sourceOf } from './types.js';
+import type { Finding } from '../../types.js';
+import { info, type RuleContext, sourceOf } from './types.js';
 
 /**
  * `colorSpace: srgb`.
  *
  * Three-valued, on purpose (see `scanner/inspect.ts#classifyColorSpace`):
  *
- *   - 'non-srgb' is a violation.
- *   - 'srgb' is compliant.
- *   - 'unknown' is NOT reported as a violation and NOT silently counted as
- *     compliant. It is surfaced as a note so the file is visible without
- *     failing a build over something Rasterwright could not determine. This is
- *     a deliberate v0 decision: false positives here would train people to
- *     ignore the tool.
+ *   - 'non-srgb' is an ERROR. The pixels will be interpreted wrongly by
+ *     anything that ignores the profile, which on the web is most things.
+ *   - 'srgb' is compliant, and stays compliant whether the sRGB-ness comes
+ *     from an embedded profile or from the untagged-means-sRGB convention.
+ *     An image carrying an explicit `sRGB IEC61966-2.1` or `GIMP built-in sRGB`
+ *     profile is doing what was asked and is not reported at all.
+ *   - 'unknown' is INFO. Not an error, and not silently counted as compliant
+ *     either. A false positive here would train people to ignore the tool.
+ *
+ * The eventual fix order is: decode the source colours correctly, convert
+ * pixels to sRGB if required, encode, then decide what profile to retain. None
+ * of that is implemented, and `check` rewrites nothing.
  */
-export function checkColorSpace(ctx: RuleContext): RuleOutcome {
-  const { info, body } = ctx;
-  if (body.colorSpace !== 'srgb') return { violations: [], notes: [] };
+export function checkColorSpace(ctx: RuleContext): Finding[] {
+  const { info: image, body } = ctx;
+  if (body.colorSpace !== 'srgb') return [];
 
-  if (info.colorSpaceStatus === 'srgb') return { violations: [], notes: [] };
+  if (image.colorSpaceStatus === 'srgb') return [];
 
-  if (info.colorSpaceStatus === 'unknown') {
-    const notes: Note[] = [
-      {
-        code: 'colorSpaceUnknown',
-        message:
-          'an ICC profile is present but could not be identified, so sRGB compliance is unknown; ' +
-          'not reported as a violation',
-      },
+  if (image.colorSpaceStatus === 'unknown') {
+    return [
+      info(
+        ctx,
+        'colorSpaceUnknown',
+        'carries an ICC profile Rasterwright could not identify, so sRGB compliance is unknown',
+        sourceOf(ctx, 'colorSpace'),
+      ),
     ];
-    return { violations: [], notes };
   }
 
-  const described = info.iccDescription ?? info.pixelColorSpace;
-  const violation: Violation = {
-    path: info.path,
-    rule: sourceOf(ctx, 'colorSpace'),
-    check: 'colorSpace',
-    actual: described,
-    allowed: 'sRGB',
-    fixable: 'yes',
-    message: `colour space is ${described}, policy requires sRGB`,
-  };
-
-  return { violations: [violation], notes: [] };
+  const described = image.iccDescription ?? image.pixelColorSpace;
+  return [
+    {
+      path: image.path,
+      rule: sourceOf(ctx, 'colorSpace'),
+      check: 'colorSpace',
+      severity: 'error',
+      actual: described,
+      allowed: 'sRGB',
+      fixable: 'yes',
+      message: `colour space is ${described}, policy requires sRGB`,
+    },
+  ];
 }

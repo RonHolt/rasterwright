@@ -34,12 +34,24 @@ async function assertReadOnly(project: string, args: string[]): Promise<void> {
 }
 
 describe('check is read-only', () => {
-  it('changes nothing in a project with violations', async () => {
+  it('changes nothing in a project with errors', async () => {
     await assertReadOnly('mixed', ['check']);
   });
 
   it('changes nothing with --json', async () => {
     await assertReadOnly('mixed', ['check', '--json']);
+  });
+
+  it('changes nothing with --verbose', async () => {
+    await assertReadOnly('mixed', ['check', '--verbose']);
+  });
+
+  it('changes nothing in a project whose findings are all warnings', async () => {
+    await assertReadOnly('warnings-only', ['check']);
+  });
+
+  it('changes nothing when a rule turns autoOrient off', async () => {
+    await assertReadOnly('autoorient', ['check']);
   });
 
   it('changes nothing in a clean project', async () => {
@@ -59,6 +71,17 @@ describe('check is read-only', () => {
     await runCli(['check'], root);
     expect(fs.existsSync(path.join(root, '.rasterwright'))).toBe(false);
     expect(fs.readdirSync(root).sort()).toEqual(['.fixture.json', '.rasterwright.yml', 'assets', 'ungoverned']);
+  });
+
+  it('does not rename a file whose extension disagrees with its contents', async () => {
+    // The extension check is an error, and errors are still only reported.
+    const root = copyProject('mixed');
+    const before = snapshotTree(root);
+    const result = await runCli(['check'], root);
+    expect(result.stdout).toMatch(/File extension does not match/);
+    expect(fs.existsSync(path.join(root, 'assets', 'logo-webp.png'))).toBe(true);
+    expect(fs.existsSync(path.join(root, 'assets', 'logo-webp.webp'))).toBe(false);
+    expect(snapshotTree(root)).toEqual(before);
   });
 
   it('leaves the git index and working tree untouched inside a repo', async () => {

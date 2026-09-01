@@ -1,0 +1,8 @@
+{
+  "images": {
+    "assets/exif.jpg": "with-exif.jpg",
+    "assets/xmp.png": "with-xmp.png",
+    "assets/tagged.png": "srgb-profile.png",
+    "assets/clean.jpg": "compliant.jpg"
+  }
+}

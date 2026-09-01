@@ -1,0 +1,8 @@
+# Nothing here breaks a constraint. Every finding is a normalization
+# preference, so `check` reports them and still exits 0.
+version: 1
+
+rules:
+  "assets/**/*.{jpg,png}":
+    maxWidth: 2400
+    maxBytes: 1mb

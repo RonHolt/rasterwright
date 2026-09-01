@@ -32,6 +32,7 @@ const FORMAT_ALIASES: Record<string, ImageFormat> = {
 export const BUILT_IN_DEFAULTS: RuleBody = {
   upscale: false,
   stripMetadata: true,
+  autoOrient: true,
   colorSpace: 'srgb',
 };
 
@@ -45,6 +46,7 @@ const RULE_BODY_KEYS = new Set([
   'format',
   'upscale',
   'stripMetadata',
+  'autoOrient',
   'colorSpace',
   'quality',
 ]);
@@ -133,6 +135,9 @@ export function parseRuleBody(raw: unknown, where: string): RuleBody {
   }
   if (raw.stripMetadata !== undefined) {
     body.stripMetadata = requireBoolean(raw.stripMetadata, `${where}.stripMetadata`);
+  }
+  if (raw.autoOrient !== undefined) {
+    body.autoOrient = requireBoolean(raw.autoOrient, `${where}.autoOrient`);
   }
   if (raw.colorSpace !== undefined) {
     if (raw.colorSpace !== 'srgb') {

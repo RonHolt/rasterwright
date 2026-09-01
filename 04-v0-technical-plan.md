@@ -561,3 +561,72 @@ Short, ordered, and not a full backlog. Each step should end with something runn
 11. **Use it on a real project.** Then fix what is actually annoying, in whatever order the annoyance dictates.
 
 Only after step 11: `--json` polish for agents, a `SKILL.md`, a pre-commit hook, and CI integration, in that order, and only if the tool has survived real use.
+
+---
+
+## 14. Implementation decisions from real-world `check` testing
+
+Added 2026-09-01, after running the read-only `check` against a production
+WordPress theme with 75 governed images. These supersede the corresponding
+guesses earlier in this document. Nothing here is implemented yet except where
+noted; the rest is binding on the future `fix`.
+
+**1. `maxBytes` is a ceiling, not a target.** `quality.start` is the *maximum*
+quality the encoder will initially try. If that output already fits the ceiling,
+accept it. Search quality downward only when the ceiling is exceeded, and never
+upward to consume unused budget. (Implemented in the schema and types.)
+
+**2. Renames require per-run authorization, not config.** Converting
+`hero.png` to `hero.webp` renames the file and can break references in source
+code. The permission belongs on the command, not in `.rasterwright.yml`:
+
+```
+rasterwright fix --allow-renames
+```
+
+Policy describes the desired state of the assets; `--allow-renames` is execution
+permission. Without the flag, `fix` **skips** the rename and reports why. It
+does not fail the batch: a file needing human approval is not a broken build.
+Do not add an `allowRenames` config property.
+
+**3. `stripMetadata` is a normalization preference, not an enforcement rule.**
+It means "if Rasterwright rewrites this file, drop the ancillary metadata", not
+"any EXIF anywhere means the repository is broken". The real run found 3 genuine
+constraint violations and 17 files carrying harmless EXIF; failing on the latter
+buried the former. Metadata findings are therefore warnings and never affect the
+exit code. No `enforceMetadata` option until a concrete need appears.
+(Implemented.)
+
+**4. An ICC profile is colour management, not disposable metadata.** It is not
+counted by `stripMetadata` at all. It is used to determine colour-space status,
+and an image tagged `sRGB IEC61966-2.1` under `colorSpace: srgb` is compliant
+and silent. The eventual fix order is: decode source colours correctly ->
+convert pixels to sRGB if required -> encode -> decide what profile to retain.
+(Detection implemented; the conversion path is not.)
+
+**5. Findings carry a severity.** `error` breaks the repository contract and
+fails the run; `warning` is worth fixing and never fails it; `info` explains what
+a future `fix` would do. The human report shows errors individually, summarizes
+warnings, and hides notes behind `--verbose`; `--json` stays exhaustive.
+(Implemented.)
+
+**6. File extension versus encoded format is a first-class check.** The theme
+contained a `.png` that Sharp decodes as WebP, which every content-derived check
+happily passed. Extensions are load-bearing for MIME types, bundler loaders,
+CDNs and caches, so a mismatch is an error. Its fix is a rename, and therefore
+subject to `--allow-renames`. (Implemented.)
+
+**7. Glob case sensitivity follows the platform**, deterministically: Windows
+case-insensitive, Linux and macOS case-sensitive. No filesystem probing. macOS
+is usually case-insensitive on disk but not always, and matching should not
+depend on which volume a repository happens to live on; case-sensitive also
+agrees with CI. (Implemented.)
+
+**8. `check` never encodes.** No trial encodes, no `--verify-budgets`. `check`
+inspects and evaluates; `fix` transforms. `maxBytes` fixability stays `unknown`
+because the honest answer requires an encoder.
+
+**9. Deferred, with the reasoning recorded.** A `preferredFormat` distinct from
+a hard `format` requirement; a `--strict` mode that promotes unknown colour
+space to an error; caching or lazy analysis for `stats()` cost. None of these
+were justified by the real run. Revisit when a project demonstrates the need.

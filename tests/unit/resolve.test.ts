@@ -32,6 +32,7 @@ describe('rule precedence', () => {
     expect(rule.body).toEqual({
       upscale: false,
       stripMetadata: true,
+      autoOrient: true,
       colorSpace: 'srgb',
       // The later rule overrode maxWidth...
       maxWidth: 800,
@@ -74,7 +75,7 @@ rules:
   "assets/**": {}
 `).resolve('assets/a.jpg');
     expect(rule.matchedGlobs).toEqual(['assets/**']);
-    expect(rule.body).toEqual({ upscale: false, stripMetadata: true, colorSpace: 'srgb' });
+    expect(rule.body).toEqual({ upscale: false, stripMetadata: true, autoOrient: true, colorSpace: 'srgb' });
   });
 });
 
@@ -86,9 +87,14 @@ describe('matching', () => {
     expect(resolver.resolve('docs/screenshot.png').matchedGlobs).toEqual([]);
   });
 
-  it('matches case-insensitively', () => {
-    expect(resolver.isGoverned('assets/HERO.JPG')).toBe(true);
-    expect(resolver.isGoverned('Assets/hero.jpg')).toBe(true);
+  it('follows the platform for case sensitivity', () => {
+    // Windows is case-insensitive; Linux and macOS are case-sensitive, so that
+    // a repository behaves the same locally as it does in CI.
+    const expected = process.platform === 'win32';
+    expect(resolver.isGoverned('assets/HERO.JPG')).toBe(expected);
+    expect(resolver.isGoverned('Assets/hero.jpg')).toBe(expected);
+    // Exact casing always matches, on every platform.
+    expect(resolver.isGoverned('assets/hero.jpg')).toBe(true);
   });
 
   it('does not match a governed extension outside the glob', () => {

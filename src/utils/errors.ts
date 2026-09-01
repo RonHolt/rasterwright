@@ -1,12 +1,12 @@
 /**
  * Rasterwright's exit codes.
  *
- *   0  clean          - every governed image satisfies policy
- *   1  violations     - at least one violation, or an image that could not be read
- *   2  error          - configuration or runtime failure; nothing was checked
+ *   0  clean   - no error-level findings. Warnings and notes do not fail a run.
+ *   1  errors  - at least one error-level finding, including an unreadable image
+ *   2  failure - configuration or runtime failure; nothing was checked
  */
 export const EXIT_CLEAN = 0;
-export const EXIT_VIOLATIONS = 1;
+export const EXIT_ERRORS = 1;
 export const EXIT_ERROR = 2;
 
 /** A user-facing failure that should exit with code 2 and no stack trace. */

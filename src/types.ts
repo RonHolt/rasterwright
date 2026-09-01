@@ -57,6 +57,9 @@ export interface ImageInfo {
   iccDescription: string | null;
   hasExif: boolean;
   hasXmp: boolean;
+  hasIptc: boolean;
+  /** Photoshop TIFF tag, or PNG text chunks: ancillary, but neither EXIF nor XMP. */
+  hasOtherMetadata: boolean;
   /** EXIF orientation; 1 is normal. Absent orientation is reported as 1. */
   orientation: number;
   isAnimated: boolean;
@@ -89,8 +92,18 @@ export interface RuleBody {
   format?: ImageFormat;
   /** Never enlarge an image. Always false in v0; present so the schema is stable. */
   upscale?: boolean;
-  /** Remove EXIF / XMP / ICC. Default true. */
+  /**
+   * A normalization *preference*, not an enforcement rule: if Rasterwright ever
+   * rewrites this file, ancillary metadata should be dropped. Default true.
+   * Findings it produces are warnings, never errors. ICC profiles are excluded -
+   * those are colour management, handled by `colorSpace`.
+   */
   stripMetadata?: boolean;
+  /**
+   * Normalize a non-normal EXIF orientation flag. Default true. When false,
+   * Rasterwright leaves orientation alone and reports nothing about it.
+   */
+  autoOrient?: boolean;
   /** Only 'srgb' is meaningful in v0. */
   colorSpace?: 'srgb';
   quality?: QualityBand;
@@ -122,77 +135,112 @@ export interface EffectiveRule {
   sources: Partial<Record<keyof RuleBody, string>>;
 }
 
+/**
+ * Every check Rasterwright can report on.
+ *
+ * The first group are policy constraints the repository contract says are
+ * genuinely wrong. The rest are normalization preferences and observations.
+ */
 export type CheckName =
   | 'maxWidth'
   | 'maxHeight'
   | 'maxBytes'
   | 'format'
-  | 'metadata'
+  | 'extension'
   | 'colorSpace'
-  | 'orientation';
+  | 'orientation'
+  | 'decode'
+  | 'metadata'
+  | 'transparency'
+  | 'alphaUnused'
+  | 'colorSpaceUnknown'
+  | 'animated'
+  | 'ruleGlobExcludesTargetFormat';
 
 /**
- * Whether a future `fix` could resolve a violation.
+ * How much a finding should matter.
+ *
+ * - `error`   - the repository contract is broken. Fails the run (exit 1).
+ * - `warning` - worth fixing, does not make the repo wrong. Never fails the run.
+ * - `info`    - an observation that explains what a future `fix` would do.
+ *
+ * The split exists because the first real run against a production theme found
+ * three genuine constraint violations and seventeen files carrying harmless
+ * EXIF. Treating those the same made the useful findings unreadable.
+ */
+export type Severity = 'error' | 'warning' | 'info';
+
+/**
+ * Whether a future `fix` could resolve a finding.
  *
  * - `yes`     - a deterministic transform resolves it.
  * - `no`      - it cannot be resolved safely (e.g. JPEG cannot hold transparency).
  * - `unknown` - nothing blocks it, but the answer depends on encoding results
  *               that `check` deliberately does not produce. `maxBytes` is the
  *               only check that lands here.
+ * - `n/a`     - there is nothing to fix (informational findings).
  */
-export type Fixability = 'yes' | 'no' | 'unknown';
+export type Fixability = 'yes' | 'no' | 'unknown' | 'n/a';
 
-export interface Violation {
+/** One thing Rasterwright noticed about one file. */
+export interface Finding {
   path: string;
-  /** The glob whose value produced this violation, or '(defaults)'. */
+  /** The glob whose value produced it, or '(defaults)' / '(built-in)'. */
   rule: string;
   check: CheckName;
-  actual: string | number;
-  allowed: string | number;
+  severity: Severity;
+  /** What the file actually is. `null` for findings with no measurement. */
+  actual: string | number | null;
+  /** What policy allows. `null` for findings with no measurement. */
+  allowed: string | number | null;
   fixable: Fixability;
   /** Why it is not fixable, or what a fix would have to do. */
   message: string;
 }
 
-/** A non-blocking observation. Never affects the exit code. */
-export interface Note {
-  code: 'colorSpaceUnknown' | 'transparency' | 'animated' | 'ruleGlobExcludesTargetFormat';
-  message: string;
-}
-
-export type FileStatus = 'compliant' | 'violating' | 'error';
+/** Highest severity present on a file; `clean` when it has no findings. */
+export type FileStatus = 'clean' | 'info' | 'warning' | 'error';
 
 export interface FileResult {
   path: string;
   status: FileStatus;
-  /** Undefined only when `status` is 'error'. */
+  /** Undefined only when the file could not be decoded. */
   image?: ImageInfo;
-  /** The merged policy that applied to this file. Undefined when `status` is 'error'. */
+  /** The merged policy that applied. Undefined when the file could not be decoded. */
   policy?: RuleBody;
   matchedGlobs: string[];
-  violations: Violation[];
-  notes: Note[];
-  /** Aggregate fixability across `violations`. 'yes' when there are none. */
+  findings: Finding[];
+  /**
+   * Aggregate fixability across this file's error- and warning-level findings.
+   * 'yes' when there is nothing to fix.
+   */
   fixable: Fixability;
-  /** Present when `status` is 'error'. */
+  /** The decoder's message, when the file could not be read or decoded. */
   error?: string;
 }
 
 export interface CheckSummary {
   /** Governed images that were inspected. */
   checked: number;
-  compliant: number;
-  violating: number;
-  /** Total violation count across all files. */
-  violations: number;
-  /** Files that could not be inspected (corrupt, unreadable, unsupported). */
+  /** No errors and no warnings. Files carrying only info findings count as clean. */
+  clean: number;
+  /** At least one warning. Counted independently of `withErrors`; a file can be in both. */
+  withWarnings: number;
+  /** At least one error. */
+  withErrors: number;
+  /** Total findings by severity, across every file. */
   errors: number;
+  warnings: number;
+  infos: number;
+  /** Files that could not be decoded. A subset of `withErrors`. */
+  unreadable: number;
   /** Image files found but matched by no rule. Silently skipped. */
   ignored: number;
 }
 
 export interface CheckReport {
   rasterwrightVersion: string;
+  /** True when no file produced an error-level finding. Warnings do not affect it. */
   clean: boolean;
   /** Absolute path to the config that was used. */
   configPath: string;

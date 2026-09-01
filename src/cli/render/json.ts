@@ -3,11 +3,16 @@ import type { CheckReport } from '../../types.js';
 /**
  * Machine-readable `check` output.
  *
- * Shape is intentionally flat and boring. This is not a stable public API yet;
- * it exists so a coding agent can read a check result without parsing a table.
- * Every checked file is included, not just the violating ones, because "this
- * file is governed and compliant" is useful information to an agent about to
- * add another image next to it.
+ * Exhaustive on purpose, and the opposite of the human report: where that
+ * summarizes to stay readable, this lists every finding on every checked file,
+ * compliant ones included, because "this file is governed and passes" is useful
+ * to an agent about to add another image next to it.
+ *
+ * Every finding carries `severity` (error / warning / info) and `fixability`
+ * (yes / no / unknown / n/a), so a caller can tell a hard failure from a
+ * normalization preference, and a safe fix from one that needs a human.
+ *
+ * Shape is intentionally flat and boring, and is not a stable public API yet.
  */
 export function renderJson(report: CheckReport, diagnostics: string[]): string {
   return JSON.stringify({ ...report, diagnostics }, null, 2);

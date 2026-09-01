@@ -1,23 +1,24 @@
-import type { Violation } from '../../types.js';
-import { type RuleContext, type RuleOutcome, sourceOf } from './types.js';
+import type { Finding } from '../../types.js';
+import { type RuleContext, sourceOf } from './types.js';
 
 /**
- * `maxWidth` / `maxHeight`.
+ * `maxWidth` / `maxHeight`. Errors: these are the constraints the repository
+ * contract is actually about.
  *
  * Compared against the *displayed* dimensions, i.e. after the EXIF orientation
  * flag is applied, because that is the size the image occupies on a page.
- * Always fixable: downscaling is deterministic and lossless in the sense that
- * matters here.
+ * Always fixable: downscaling is deterministic.
  */
-export function checkDimensions(ctx: RuleContext): RuleOutcome {
-  const violations: Violation[] = [];
+export function checkDimensions(ctx: RuleContext): Finding[] {
+  const findings: Finding[] = [];
   const { info, body } = ctx;
 
   if (body.maxWidth !== undefined && info.width > body.maxWidth) {
-    violations.push({
+    findings.push({
       path: info.path,
       rule: sourceOf(ctx, 'maxWidth'),
       check: 'maxWidth',
+      severity: 'error',
       actual: info.width,
       allowed: body.maxWidth,
       fixable: 'yes',
@@ -26,10 +27,11 @@ export function checkDimensions(ctx: RuleContext): RuleOutcome {
   }
 
   if (body.maxHeight !== undefined && info.height > body.maxHeight) {
-    violations.push({
+    findings.push({
       path: info.path,
       rule: sourceOf(ctx, 'maxHeight'),
       check: 'maxHeight',
+      severity: 'error',
       actual: info.height,
       allowed: body.maxHeight,
       fixable: 'yes',
@@ -37,5 +39,5 @@ export function checkDimensions(ctx: RuleContext): RuleOutcome {
     });
   }
 
-  return { violations, notes: [] };
+  return findings;
 }

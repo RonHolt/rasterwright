@@ -28,13 +28,28 @@ import type { EffectiveRule, ImageFormat, Policy, RuleBody } from '../types.js';
  *
  * ## Matching
  *
- * Globs are matched against repo-relative POSIX paths, case-insensitively, so
- * `assets/**\/*.jpg` also matches `Assets/HERO.JPG` on a case-sensitive
- * filesystem. `**` crosses directory boundaries; a trailing `/**` matches
- * everything beneath a directory.
+ * Globs are matched against repo-relative POSIX paths. `**` crosses directory
+ * boundaries; a trailing `/**` matches everything beneath a directory.
+ *
+ * Case sensitivity follows the platform, deterministically:
+ *
+ *   - Windows  - case-insensitive
+ *   - Linux    - case-sensitive
+ *   - macOS    - case-sensitive
+ *
+ * macOS is usually case-insensitive on disk, but only usually: case-sensitive
+ * volumes exist, and probing the filesystem to find out would make matching
+ * depend on where the repository happens to live. Case-sensitive is the
+ * predictable answer, and it agrees with CI, which is nearly always Linux. The
+ * consequence is that on macOS and Linux a rule of `assets/**\/*.jpg` does not
+ * govern `assets/HERO.JPG`; that file is discovered, matched by nothing, and
+ * skipped. Write the glob to cover the casing you actually use.
  */
 
-const MATCH_OPTIONS: picomatch.PicomatchOptions = { dot: true, nocase: true };
+const MATCH_OPTIONS: picomatch.PicomatchOptions = {
+  dot: true,
+  nocase: process.platform === 'win32',
+};
 
 /** Canonical file extension Rasterwright would use for each output format. */
 export const FORMAT_EXTENSION: Record<ImageFormat, string> = {
@@ -50,6 +65,7 @@ const PROPERTY_KEYS = [
   'format',
   'upscale',
   'stripMetadata',
+  'autoOrient',
   'colorSpace',
   'quality',
 ] as const satisfies readonly (keyof RuleBody)[];

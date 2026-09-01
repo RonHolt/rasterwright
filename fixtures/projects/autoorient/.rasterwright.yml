@@ -1,0 +1,11 @@
+version: 1
+
+rules:
+  # Leave the orientation flag alone. Rasterwright reports nothing about it.
+  "kept/**":
+    autoOrient: false
+    stripMetadata: false
+
+  # The default. A non-normal orientation flag is an error.
+  "normalized/**":
+    stripMetadata: false

@@ -1,30 +1,34 @@
-import type { Violation } from '../../types.js';
-import type { RuleContext, RuleOutcome } from './types.js';
+import type { Finding } from '../../types.js';
+import { type RuleContext, sourceOf } from './types.js';
 
 /**
- * EXIF orientation.
+ * EXIF orientation, gated on `autoOrient` (default true).
  *
  * A non-normal orientation flag means the stored pixels and the displayed image
- * disagree, which every downstream tool then has to handle. Rasterwright always
- * wants it normalized, so this check has no config key in v0 - it applies to
- * every governed file. If that turns out to be wrong, an `autoOrient` property
- * is the obvious escape hatch, but speculative config is worse than none.
+ * disagree, which every downstream tool then has to handle correctly - and many
+ * do not. With `autoOrient: true` that is an error a future fix would normalize
+ * by rotating the pixels and clearing the flag.
+ *
+ * With `autoOrient: false` Rasterwright leaves orientation alone entirely and
+ * reports nothing about it, for projects that have a reason to keep the flag.
  */
-export function checkOrientation(ctx: RuleContext): RuleOutcome {
-  const { info } = ctx;
-  if (info.orientation === 1) return { violations: [], notes: [] };
+export function checkOrientation(ctx: RuleContext): Finding[] {
+  const { info, body } = ctx;
+  if (body.autoOrient === false) return [];
+  if (info.orientation === 1) return [];
 
-  const violation: Violation = {
-    path: info.path,
-    rule: '(built-in)',
-    check: 'orientation',
-    actual: info.orientation,
-    allowed: 1,
-    fixable: info.isAnimated ? 'no' : 'yes',
-    message:
-      `EXIF orientation ${info.orientation}; stored as ${info.storedWidth}x${info.storedHeight}, ` +
-      `displayed as ${info.width}x${info.height}`,
-  };
-
-  return { violations: [violation], notes: [] };
+  return [
+    {
+      path: info.path,
+      rule: sourceOf(ctx, 'autoOrient'),
+      check: 'orientation',
+      severity: 'error',
+      actual: info.orientation,
+      allowed: 1,
+      fixable: info.isAnimated ? 'no' : 'yes',
+      message:
+        `EXIF orientation ${info.orientation}; stored as ${info.storedWidth}x${info.storedHeight}, ` +
+        `displayed as ${info.width}x${info.height}`,
+    },
+  ];
 }

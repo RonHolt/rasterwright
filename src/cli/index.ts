@@ -17,6 +17,7 @@ program
   .description('Report image policy violations. Never modifies anything.')
   .option('-c, --config <path>', 'path to .rasterwright.yml (default: nearest one, searching upwards)')
   .option('--json', 'emit machine-readable JSON on stdout instead of a report')
+  .option('-v, --verbose', 'list every warning and note individually instead of summarizing')
   .option('--no-gitignore', 'do not skip git-ignored files')
   .option('--concurrency <n>', 'number of images to inspect in parallel', (value) => {
     const parsed = Number.parseInt(value, 10);
@@ -25,7 +26,13 @@ program
     }
     return parsed;
   })
-  .action(async (options: { config?: string; json?: boolean; gitignore?: boolean; concurrency?: number }) => {
+  .action(async (options: {
+    config?: string;
+    json?: boolean;
+    verbose?: boolean;
+    gitignore?: boolean;
+    concurrency?: number;
+  }) => {
     const code = await checkCommand(
       { cwd: process.cwd(), ...options },
       {

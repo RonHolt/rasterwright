@@ -1,4 +1,4 @@
-import type { EffectiveRule, ImageInfo, Note, RuleBody, Violation } from '../../types.js';
+import type { EffectiveRule, Finding, ImageInfo, RuleBody } from '../../types.js';
 
 /** Everything a single check is allowed to look at. Pure data in, pure data out. */
 export interface RuleContext {
@@ -8,14 +8,7 @@ export interface RuleContext {
   matchedGlobs: string[];
 }
 
-export interface RuleOutcome {
-  violations: Violation[];
-  notes: Note[];
-}
-
-export const EMPTY: RuleOutcome = { violations: [], notes: [] };
-
-/** Which rule glob supplied a property's value, for violation attribution. */
+/** Which rule glob supplied a property's value, for finding attribution. */
 export function sourceOf(ctx: RuleContext, key: keyof RuleBody): string {
   return ctx.sources[key] ?? '(defaults)';
 }
@@ -29,4 +22,31 @@ export function sourceOf(ctx: RuleContext, key: keyof RuleBody): string {
  */
 export function hasMeaningfulAlpha(info: ImageInfo): boolean {
   return info.hasAlpha && info.isOpaque !== true;
+}
+
+/** An alpha channel that exists but is provably unused. */
+export function hasUnusedAlpha(info: ImageInfo): boolean {
+  return info.hasAlpha && info.isOpaque === true;
+}
+
+/** Display labels for formats. */
+export const FORMAT_LABEL = { jpeg: 'JPEG', png: 'PNG', webp: 'WebP' } as const;
+
+/** Shorthand for an informational finding, which never has anything to fix. */
+export function info(
+  ctx: RuleContext,
+  check: Finding['check'],
+  message: string,
+  rule = '(built-in)',
+): Finding {
+  return {
+    path: ctx.info.path,
+    rule,
+    check,
+    severity: 'info',
+    actual: null,
+    allowed: null,
+    fixable: 'n/a',
+    message,
+  };
 }

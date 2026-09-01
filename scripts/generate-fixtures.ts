@@ -99,6 +99,38 @@ const FIXTURES: Fixture[] = [
     name: 'cmyk.jpg',
     build: () => solid(400, 300, '#336699').toColourspace('cmyk').jpeg({ quality: 70 }).toBuffer(),
   },
+  // WebP contents behind a .png extension. Taken from a real theme, where a
+  // logo had been converted in place without renaming the file.
+  {
+    name: 'webp-named-png.png',
+    build: () => solidAlpha(300, 200, 0.5).webp({ quality: 75 }).toBuffer(),
+  },
+  // JPEG contents behind a .jpeg extension: an alias, not a mismatch.
+  {
+    name: 'aliased.jpeg',
+    build: () => solid(300, 200, '#99aa33').jpeg({ quality: 70, mozjpeg: true }).toBuffer(),
+  },
+  // Carries XMP but no EXIF, so the warning breakdown has more than one bucket.
+  {
+    name: 'with-xmp.png',
+    build: () =>
+      solid(300, 200, '#aa3366')
+        .png({ compressionLevel: 9 })
+        .withXmp(
+          '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>' +
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF ' +
+            'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">' +
+            '<rdf:Description rdf:about=""/></rdf:RDF></x:xmpmeta><?xpacket end="r"?>',
+        )
+        .toBuffer(),
+  },
+  // An explicit sRGB ICC profile and nothing else. Colour management, not
+  // disposable metadata: this must NOT produce a metadata warning.
+  {
+    name: 'srgb-profile.png',
+    build: () =>
+      solid(300, 200, '#3366aa').png({ compressionLevel: 9 }).keepIccProfile().withIccProfile('srgb').toBuffer(),
+  },
   // Not an image at all, despite the extension.
   { name: 'corrupt.jpg', build: async () => Buffer.from('This is not a JPEG. Not even slightly.\n') },
 ];

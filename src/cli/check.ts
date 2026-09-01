@@ -2,13 +2,14 @@ import { loadConfig } from '../config/load.js';
 import { runCheck } from '../run-check.js';
 import { renderHuman } from './render/human.js';
 import { renderJson } from './render/json.js';
-import { EXIT_CLEAN, EXIT_VIOLATIONS } from '../utils/errors.js';
+import { EXIT_CLEAN, EXIT_ERRORS } from '../utils/errors.js';
 import { readVersion } from './version.js';
 
 export interface CheckCommandOptions {
   cwd: string;
   config?: string;
   json?: boolean;
+  verbose?: boolean;
   gitignore?: boolean;
   concurrency?: number;
 }
@@ -25,6 +26,10 @@ export interface Streams {
  * `process.exit`, so it stays testable.
  *
  * With `--json`, stdout carries JSON and nothing else; diagnostics go to stderr.
+ *
+ * Exit code is driven by errors alone. Warnings are reported and never fail the
+ * run, which is what makes `check` usable as a habitual command rather than
+ * something people start passing flags to silence.
  */
 export async function checkCommand(options: CheckCommandOptions, streams: Streams): Promise<number> {
   const config = loadConfig(options.cwd, options.config);
@@ -35,13 +40,12 @@ export async function checkCommand(options: CheckCommandOptions, streams: Stream
     ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
   });
 
-  if (options.json === true) {
-    for (const diagnostic of diagnostics) streams.err(`rasterwright: ${diagnostic}`);
-    streams.out(renderJson(report, diagnostics));
-  } else {
-    for (const diagnostic of diagnostics) streams.err(`rasterwright: ${diagnostic}`);
-    streams.out(renderHuman(report));
-  }
+  for (const diagnostic of diagnostics) streams.err(`rasterwright: ${diagnostic}`);
+  streams.out(
+    options.json === true
+      ? renderJson(report, diagnostics)
+      : renderHuman(report, { verbose: options.verbose === true }),
+  );
 
-  return report.clean ? EXIT_CLEAN : EXIT_VIOLATIONS;
+  return report.clean ? EXIT_CLEAN : EXIT_ERRORS;
 }

@@ -49,7 +49,12 @@ rules:
 `);
 
     expect(policy.version).toBe(1);
-    expect(policy.defaults).toEqual({ upscale: false, stripMetadata: true, colorSpace: 'srgb' });
+    expect(policy.defaults).toEqual({
+      upscale: false,
+      stripMetadata: true,
+      autoOrient: true,
+      colorSpace: 'srgb',
+    });
     expect(policy.rules.map((rule) => rule.glob)).toEqual([
       'assets/**/*.{jpg,jpeg,png,webp}',
       'assets/heroes/**',
@@ -62,6 +67,7 @@ rules:
     expect(policyFrom(MINIMAL).defaults).toEqual({
       upscale: false,
       stripMetadata: true,
+      autoOrient: true,
       colorSpace: 'srgb',
     });
   });
@@ -75,6 +81,16 @@ rules:
   "assets/**": { maxWidth: 100 }
 `);
     expect(policy.defaults.stripMetadata).toBe(false);
+  });
+
+  it('defaults autoOrient to true and lets a rule turn it off', () => {
+    expect(policyFrom(MINIMAL).defaults.autoOrient).toBe(true);
+    const policy = policyFrom(`
+version: 1
+rules:
+  "scans/**": { autoOrient: false }
+`);
+    expect(policy.rules[0]!.body.autoOrient).toBe(false);
   });
 
   it('normalizes jpg to jpeg', () => {
@@ -120,6 +136,7 @@ describe('invalid config', () => {
     ['bad format', 'version: 1\nrules:\n  "a/**": { format: avif }', /expected one of jpeg, png, webp/],
     ['bad colorSpace', 'version: 1\nrules:\n  "a/**": { colorSpace: p3 }', /only 'srgb' is supported/],
     ['bad stripMetadata', 'version: 1\nrules:\n  "a/**": { stripMetadata: yep }', /expected true or false/],
+    ['bad autoOrient', 'version: 1\nrules:\n  "a/**": { autoOrient: sometimes }', /expected true or false/],
     ['upscale true', 'version: 1\nrules:\n  "a/**": { upscale: true }', /upscaling is not supported/],
     ['bad maxBytes', 'version: 1\nrules:\n  "a/**": { maxBytes: enormous }', /could not parse/],
   ];

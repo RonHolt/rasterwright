@@ -1,33 +1,45 @@
-import type { Violation } from '../../types.js';
-import { type RuleContext, type RuleOutcome, sourceOf } from './types.js';
+import type { Finding } from '../../types.js';
+import { type RuleContext, sourceOf } from './types.js';
 
 /**
- * `stripMetadata`.
+ * `stripMetadata`. A WARNING, never an error.
  *
- * Only reports what Sharp exposes as present: an EXIF block, an XMP packet, or
- * an embedded ICC profile. It deliberately does not claim to know about every
- * ancillary chunk a file may carry - reporting "metadata: yes/no" honestly is
- * more useful than an inventory Rasterwright cannot actually produce.
+ * The first real run against a production theme found 3 genuine constraint
+ * violations and 17 files carrying harmless EXIF. Failing the run over the
+ * latter buried the former. So `stripMetadata: true` is read as a
+ * normalization *preference*:
+ *
+ *   "if Rasterwright ever rewrites this file, drop the ancillary metadata"
+ *
+ * not as "any EXIF anywhere means this repository is broken". If a project
+ * genuinely needs metadata to be a hard gate, that is a future option; nothing
+ * observed so far justifies one.
+ *
+ * ICC profiles are deliberately NOT counted here. A colour profile is colour
+ * management, not disposable baggage, and an image tagged `sRGB IEC61966-2.1`
+ * is doing exactly what `colorSpace: srgb` asked for. See `colorSpace.ts`.
  */
-export function checkMetadata(ctx: RuleContext): RuleOutcome {
+export function checkMetadata(ctx: RuleContext): Finding[] {
   const { info, body } = ctx;
-  if (body.stripMetadata !== true) return { violations: [], notes: [] };
+  if (body.stripMetadata !== true) return [];
 
   const present: string[] = [];
   if (info.hasExif) present.push('EXIF');
   if (info.hasXmp) present.push('XMP');
-  if (info.hasIccProfile) present.push('ICC profile');
-  if (present.length === 0) return { violations: [], notes: [] };
+  if (info.hasIptc) present.push('IPTC');
+  if (info.hasOtherMetadata) present.push('other ancillary metadata');
+  if (present.length === 0) return [];
 
-  const violation: Violation = {
-    path: info.path,
-    rule: sourceOf(ctx, 'stripMetadata'),
-    check: 'metadata',
-    actual: present.join(', '),
-    allowed: 'none',
-    fixable: 'yes',
-    message: `${present.join(', ')} present, policy says strip metadata`,
-  };
-
-  return { violations: [violation], notes: [] };
+  return [
+    {
+      path: info.path,
+      rule: sourceOf(ctx, 'stripMetadata'),
+      check: 'metadata',
+      severity: 'warning',
+      actual: present.join(', '),
+      allowed: 'none',
+      fixable: 'yes',
+      message: `${present.join(', ')} present; a future fix would remove it`,
+    },
+  ];
 }

@@ -9,6 +9,12 @@
     "assets/cmyk.jpg": "cmyk.jpg",
     "assets/heroes/hero.jpg": "compliant.jpg",
     "assets/icons/logo.png": "transparent.png",
-    "ungoverned/stray.png": "plain.png"
+    "ungoverned/stray.png": "plain.png",
+    "assets/logo-webp.png": "webp-named-png.png",
+    "assets/photo.jpeg": "aliased.jpeg",
+    "assets/exif.jpg": "with-exif.jpg",
+    "assets/xmp.png": "with-xmp.png",
+    "assets/tagged.png": "srgb-profile.png",
+    "assets/opaque.png": "opaque-alpha.png"
   }
 }

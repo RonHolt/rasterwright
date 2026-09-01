@@ -1,10 +1,10 @@
 import { createResolver } from './config/resolve.js';
 import { discover } from './scanner/discover.js';
 import { inspect } from './scanner/inspect.js';
-import { evaluate } from './policy/evaluate.js';
+import { aggregateFixability, evaluate } from './policy/evaluate.js';
 import { defaultConcurrency, mapWithConcurrency } from './utils/concurrency.js';
 import type { LoadedConfig } from './config/load.js';
-import type { CheckReport, FileResult } from './types.js';
+import type { CheckReport, FileResult, Finding } from './types.js';
 
 /**
  * The `check` pipeline:
@@ -57,13 +57,25 @@ export async function runCheck(
     async (relativePath): Promise<FileResult> => {
       const result = await inspect(config.root, relativePath);
       if (!result.ok) {
+        // A governed image we cannot read is a governed image we are not
+        // governing. That is an error, not a silent pass, but it does not stop
+        // the batch: every other file is still checked.
+        const finding: Finding = {
+          path: relativePath,
+          rule: '(built-in)',
+          check: 'decode',
+          severity: 'error',
+          actual: null,
+          allowed: null,
+          fixable: 'no',
+          message: result.error,
+        };
         return {
           path: relativePath,
           status: 'error',
           matchedGlobs: resolver.resolve(relativePath).matchedGlobs,
-          violations: [],
-          notes: [],
-          fixable: 'no',
+          findings: [finding],
+          fixable: aggregateFixability([finding]),
           error: result.error,
         };
       }
@@ -71,23 +83,30 @@ export async function runCheck(
     },
   );
 
-  const violating = files.filter((file) => file.status === 'violating');
-  const errors = files.filter((file) => file.status === 'error');
-  const violations = violating.reduce((total, file) => total + file.violations.length, 0);
+  const withErrors = files.filter((file) => file.status === 'error');
+  // Counted independently of errors: a file can have both, and reporting it in
+  // only the worse bucket made the warning section disagree with the summary.
+  const withWarnings = files.filter((file) => file.findings.some((f) => f.severity === 'warning'));
+  const findings = files.flatMap((file) => file.findings);
+  const count = (severity: string): number =>
+    findings.filter((finding) => finding.severity === severity).length;
 
   const report: CheckReport = {
     rasterwrightVersion: version,
-    // An image we could not read is not a clean result. It is a file that is
-    // supposed to be governed and is not being governed.
-    clean: violating.length === 0 && errors.length === 0,
+    // Warnings never make a run unclean. Only errors do.
+    clean: withErrors.length === 0,
     configPath: config.configPath,
     root: config.root,
     summary: {
       checked: files.length,
-      compliant: files.filter((file) => file.status === 'compliant').length,
-      violating: violating.length,
-      violations,
-      errors: errors.length,
+      // Files carrying only informational findings still count as clean.
+      clean: files.filter((file) => file.status === 'clean' || file.status === 'info').length,
+      withWarnings: withWarnings.length,
+      withErrors: withErrors.length,
+      errors: count('error'),
+      warnings: count('warning'),
+      infos: count('info'),
+      unreadable: files.filter((file) => file.error !== undefined).length,
       ignored,
     },
     files,

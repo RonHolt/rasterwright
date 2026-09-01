@@ -68,7 +68,28 @@ describe('inspect', () => {
   });
 
   it('detects EXIF', async () => {
-    expect(await info('with-exif.jpg')).toMatchObject({ hasExif: true });
+    expect(await info('with-exif.jpg')).toMatchObject({ hasExif: true, hasXmp: false });
+  });
+
+  it('detects XMP separately from EXIF', async () => {
+    expect(await info('with-xmp.png')).toMatchObject({ hasXmp: true, hasExif: false });
+  });
+
+  it('reads the encoded format from the contents, not the extension', async () => {
+    // A WebP saved as .png. Every other check reads `format`, so without this
+    // the file looks entirely healthy.
+    expect(await info('webp-named-png.png')).toMatchObject({ format: 'webp' });
+    expect(await info('aliased.jpeg')).toMatchObject({ format: 'jpeg' });
+  });
+
+  it('reports an explicit sRGB profile as sRGB, not as unknown', async () => {
+    expect(await info('srgb-profile.png')).toMatchObject({
+      hasIccProfile: true,
+      iccDescription: 'sRGB',
+      colorSpaceStatus: 'srgb',
+      hasExif: false,
+      hasXmp: false,
+    });
   });
 
   it('detects CMYK as confidently non-sRGB', async () => {
