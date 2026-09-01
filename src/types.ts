@@ -151,11 +151,21 @@ export type CheckName =
   | 'orientation'
   | 'decode'
   | 'metadata'
-  | 'transparency'
-  | 'alphaUnused'
   | 'colorSpaceUnknown'
   | 'animated'
   | 'ruleGlobExcludesTargetFormat';
+
+/*
+ * Transparency is deliberately absent from this list.
+ *
+ * `hasAlpha` and `isOpaque` are ordinary properties of PNG and WebP files, not
+ * events: emitting a finding for each one produced 55 notes on the first real
+ * project, almost all of them saying "this PNG has an alpha channel". They stay
+ * on `ImageInfo` - available in `--json` and to future fix planning - and are
+ * reported only where they change an answer, which today is a `format: jpeg`
+ * rule against an image with real alpha. That surfaces as the `format` finding
+ * being unfixable, with transparency named as the reason.
+ */
 
 /**
  * How much a finding should matter.

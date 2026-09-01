@@ -1,6 +1,6 @@
 import { globCoversTargetFormat } from '../../config/resolve.js';
 import type { Finding } from '../../types.js';
-import { FORMAT_LABEL, hasMeaningfulAlpha, hasUnusedAlpha, info, type RuleContext, sourceOf } from './types.js';
+import { FORMAT_LABEL, hasMeaningfulAlpha, info, type RuleContext, sourceOf } from './types.js';
 
 /**
  * `format`. An error: policy named an output format and the file is not it.
@@ -12,6 +12,12 @@ import { FORMAT_LABEL, hasMeaningfulAlpha, hasUnusedAlpha, info, type RuleContex
  *     background colour, and `check` never flattens anything.
  *   - Animated images are out of scope for v0.
  *
+ * Transparency itself produces no finding. `hasAlpha` and `isOpaque` are
+ * properties of every PNG and WebP, not events; the first real project emitted
+ * 55 notes that were almost entirely "this PNG has an alpha channel". They stay
+ * in `ImageInfo` for `--json` and for future fix planning, and they surface
+ * here only when they change an answer, which is the `format: jpeg` case below.
+ *
  * Format conversion also renames the file (`hero.png` -> `hero.webp`), which
  * can break references in source code. A future `fix` will require explicit
  * per-run authorization (`--allow-renames`) before renaming anything.
@@ -20,19 +26,8 @@ export function checkFormat(ctx: RuleContext): Finding[] {
   const { info: image, body, matchedGlobs } = ctx;
   const findings: Finding[] = [];
 
-  // Transparency is information, not a violation. It explains what a future
-  // conversion can and cannot do, so it is reported whatever the policy says.
-  if (hasMeaningfulAlpha(image)) {
-    findings.push(info(ctx, 'transparency', 'has meaningful transparency'));
-  } else if (hasUnusedAlpha(image)) {
-    findings.push(
-      info(
-        ctx,
-        'alphaUnused',
-        'has an alpha channel in which every pixel is opaque; fix will not rewrite the file just to drop it',
-      ),
-    );
-  }
+  // Animation is genuinely exceptional and changes what v0 will do, so unlike
+  // transparency it is worth saying out loud on its own.
   if (image.isAnimated) {
     findings.push(info(ctx, 'animated', 'is animated; v0 does not transform animated images'));
   }

@@ -576,18 +576,42 @@ quality the encoder will initially try. If that output already fits the ceiling,
 accept it. Search quality downward only when the ceiling is exceeded, and never
 upward to consume unused budget. (Implemented in the schema and types.)
 
-**2. Renames require per-run authorization, not config.** Converting
-`hero.png` to `hero.webp` renames the file and can break references in source
-code. The permission belongs on the command, not in `.rasterwright.yml`:
+**2. Renames require per-run authorization, not config.** The permission belongs
+on the command, not in `.rasterwright.yml`:
 
 ```
 rasterwright fix --allow-renames
 ```
 
-Policy describes the desired state of the assets; `--allow-renames` is execution
-permission. Without the flag, `fix` **skips** the rename and reports why. It
-does not fail the batch: a file needing human approval is not a broken build.
+This covers **both** filename-changing operations:
+
+1. a format conversion that changes the extension - `hero.jpg` -> `hero.webp`;
+2. correcting an extension that disagrees with its contents, with no pixel
+   change at all - `logo.png` holding WebP bytes -> `logo.webp`.
+
+Both can break source-code references, which is the only thing that matters
+here; that the second rewrites no pixels does not make it safer. Policy
+describes the desired state of the assets; `--allow-renames` is execution
+permission. Without the flag, `fix` **skips** the affected file and reports why.
+It does not fail the batch: a file needing human approval is not a broken build.
 Do not add an `allowRenames` config property.
+
+**2a. A blocked rename skips the whole file, not just the rename.** If
+`logo.png` holds WebP bytes *and* is oversized, then without `--allow-renames`
+`fix` leaves it completely alone. It does not resize and re-encode a file it is
+about to leave deliberately mis-named. Reasons: a file's operation plan is
+applied coherently or not at all; a partial pass would spend a lossy re-encode
+that the eventual authorized run has to spend again; and finishing a run having
+knowingly produced a still-invalid file is worse than finishing having skipped
+it with a reason.
+
+**2b. Re-encoding an already-lossy image is allowed when a hard violation
+demands it.** A WebP under `format: webp` that exceeds `maxBytes` may be
+re-encoded in place - no rename, so no permission needed. Constraints:
+only when an *error*-level finding requires it, never on a compliant file, and
+if dimensions also violate policy, resize first and encode exactly once.
+Generation loss is real, so the review output must state that a lossy re-encode
+happened rather than presenting it as a free saving.
 
 **3. `stripMetadata` is a normalization preference, not an enforcement rule.**
 It means "if Rasterwright rewrites this file, drop the ancillary metadata", not
@@ -596,6 +620,19 @@ constraint violations and 17 files carrying harmless EXIF; failing on the latter
 buried the former. Metadata findings are therefore warnings and never affect the
 exit code. No `enforceMetadata` option until a concrete need appears.
 (Implemented.)
+
+**3a. `fix` never rewrites a file for metadata alone.** If ancillary metadata is
+the only finding, the result is `unchanged`. Metadata is stripped only as part
+of a rewrite that some *error* already required - a resize, a format conversion,
+a byte-budget encode, orientation normalization, or a colour-space conversion.
+The consequence is that metadata warnings can persist indefinitely on files
+nothing else touches, and that is the correct outcome: producing a diff on a
+file nobody said was wrong is exactly the surprise this tool exists to avoid.
+No `--include-warnings`, and no metadata-only rewrite path.
+
+**3b. No `--fail-on-warnings`.** Warnings continue to exit 0. There is no
+demonstrated need, and the option's existence would invite putting it in CI,
+which recreates the noise problem severity was introduced to solve.
 
 **4. An ICC profile is colour management, not disposable metadata.** It is not
 counted by `stripMetadata` at all. It is used to determine colour-space status,
@@ -608,6 +645,15 @@ convert pixels to sRGB if required -> encode -> decide what profile to retain.
 fails the run; `warning` is worth fixing and never fails it; `info` explains what
 a future `fix` would do. The human report shows errors individually, summarizes
 warnings, and hides notes behind `--verbose`; `--json` stays exhaustive.
+(Implemented.)
+
+**5a. Ordinary image properties are not findings.** The first real project
+produced 55 notes, nearly all of them "this PNG has an alpha channel". `hasAlpha`
+and `isOpaque` stay on `ImageInfo`, available in `--json` and to fix planning,
+but they emit no finding on their own. They surface only where they change an
+answer - today, a `format: jpeg` rule against an image with real alpha, which
+reports the `format` finding as unfixable and names transparency as the reason.
+`--verbose` should show what is exceptional, not catalogue what is normal.
 (Implemented.)
 
 **6. File extension versus encoded format is a first-class check.** The theme

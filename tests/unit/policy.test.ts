@@ -69,8 +69,6 @@ describe('severity', () => {
   });
 
   it('makes observations info', () => {
-    expect(findingFor(image({ hasAlpha: true, isOpaque: false }), {}, 'transparency').severity).toBe('info');
-    expect(findingFor(image({ hasAlpha: true, isOpaque: true }), {}, 'alphaUnused').severity).toBe('info');
     expect(
       findingFor(image({ colorSpaceStatus: 'unknown' }), { colorSpace: 'srgb' }, 'colorSpaceUnknown').severity,
     ).toBe('info');
@@ -79,7 +77,7 @@ describe('severity', () => {
 
   it('gives a file the status of its worst finding', () => {
     expect(evaluate(image(), rule({})).status).toBe('clean');
-    expect(evaluate(image({ hasAlpha: true, isOpaque: false }), rule({})).status).toBe('info');
+    expect(evaluate(image({ isAnimated: true }), rule({})).status).toBe('info');
     expect(evaluate(image({ hasExif: true }), rule({ stripMetadata: true })).status).toBe('warning');
     expect(evaluate(image({ width: 9000 }), rule({ maxWidth: 100, stripMetadata: true })).status).toBe('error');
   });
@@ -172,7 +170,6 @@ describe('format', () => {
       message: expect.stringMatching(/transparency present/),
     });
     expect(result.fixable).toBe('no');
-    expect(result.findings.map((f) => f.check)).toContain('transparency');
   });
 
   it('allows JPEG conversion when the alpha channel is provably unused', () => {
@@ -356,13 +353,26 @@ describe('orientation', () => {
   });
 });
 
-describe('transparency observations', () => {
-  it('never turns an opaque alpha channel into a violation', () => {
+describe('transparency', () => {
+  // Alpha is a property of most PNGs and WebPs, not an event. It belongs on
+  // ImageInfo, and surfaces as a finding only where it changes an answer.
+  it('produces no finding of its own when the alpha channel is used', () => {
+    const png = image({ path: 'assets/logo.png', hasAlpha: true, isOpaque: false, format: 'png' });
+    expect(evaluate(png, rule({ format: 'png' })).findings).toEqual([]);
+    expect(evaluate(png, rule({ format: 'png' })).status).toBe('clean');
+  });
+
+  it('produces no finding when the alpha channel is unused either', () => {
     const png = image({ path: 'assets/logo.png', hasAlpha: true, isOpaque: true, format: 'png' });
-    const result = evaluate(png, rule({ format: 'png' }));
-    expect(result.status).toBe('info');
-    expect(result.findings.map((f) => f.check)).toEqual(['alphaUnused']);
-    expect(result.findings[0]!.fixable).toBe('n/a');
+    expect(evaluate(png, rule({ format: 'png' })).findings).toEqual([]);
+    expect(evaluate(png, rule({ format: 'png' })).status).toBe('clean');
+  });
+
+  it('still blocks a JPEG conversion, which is where alpha changes the answer', () => {
+    const png = image({ path: 'assets/logo.png', hasAlpha: true, isOpaque: false, format: 'png' });
+    const finding = findingFor(png, { format: 'jpeg' }, 'format');
+    expect(finding.fixable).toBe('no');
+    expect(finding.message).toMatch(/transparency present/);
   });
 
   it('says nothing about an image with no alpha channel', () => {
@@ -395,7 +405,7 @@ describe('aggregateFixability', () => {
   it('ignores informational findings, which have nothing to fix', () => {
     expect(
       aggregateFixability([
-        { ...base, check: 'transparency', severity: 'info', fixable: 'n/a' },
+        { ...base, check: 'animated', severity: 'info', fixable: 'n/a' },
         { ...base, severity: 'error', fixable: 'yes' },
       ]),
     ).toBe('yes');

@@ -90,7 +90,7 @@ function renderFinding(finding: Finding): string[] {
 
     default: {
       const { actual, allowed } = describe(finding);
-      lines.push(pad(finding.check) + actual.padEnd(ACTUAL_COLUMN) + allowed);
+      lines.push(...columns(finding.check, actual, allowed));
       break;
     }
   }
@@ -118,6 +118,21 @@ function supplementFor(finding: Finding): string | undefined {
 
 function pad(label: string): string {
   return label.padEnd(LABEL_COLUMN);
+}
+
+/**
+ * `label   actual   allowed`, wrapping rather than colliding.
+ *
+ * `padEnd` does nothing once a value is already wider than its column, which
+ * silently ran two fields together: "other ancillary metadataa fix would remove
+ * it". When the actual value overflows, the third column moves to its own line
+ * indented to the same place instead.
+ */
+function columns(label: string, actual: string, allowed: string): string[] {
+  const head = pad(label) + actual;
+  if (allowed === '') return [head];
+  if (actual.length < ACTUAL_COLUMN) return [pad(label) + actual.padEnd(ACTUAL_COLUMN) + allowed];
+  return [head, ' '.repeat(LABEL_COLUMN) + allowed];
 }
 
 function describe(finding: Finding): { actual: string; allowed: string } {
@@ -160,9 +175,16 @@ function summarizeWarnings(files: readonly FileResult[]): string[] {
   const lines: string[] = [];
   for (const [check, bucket] of byCheck) {
     if (check === 'metadata') {
-      lines.push(`⚠ ${plural(bucket.length, 'image')} contain removable metadata`);
-      for (const [kind, count] of tallyMetadataKinds(bucket)) {
-        lines.push(`${INDENT}${count} ${kind}`);
+      lines.push(
+        `⚠ ${plural(bucket.length, 'image')} ${bucket.length === 1 ? 'contains' : 'contain'} removable metadata`,
+      );
+      // "with" matters: one file can carry EXIF and XMP and IPTC, so the
+      // subtype counts legitimately sum to more than the number of images.
+      // Reading as a bare tally, that looks like an arithmetic bug.
+      const kinds = tallyMetadataKinds(bucket);
+      const width = Math.max(...kinds.map(([, count]) => String(count).length));
+      for (const [kind, count] of kinds) {
+        lines.push(`${INDENT}${String(count).padStart(width)} with ${kind}`);
       }
     } else {
       lines.push(`⚠ ${plural(bucket.length, 'image')}: ${check}`);
@@ -173,6 +195,13 @@ function summarizeWarnings(files: readonly FileResult[]): string[] {
   return lines;
 }
 
+/**
+ * How many files carry each kind of metadata.
+ *
+ * A file contributes to every kind it holds, so these deliberately overlap and
+ * do not sum to the file count. The rendered wording says "N with EXIF" rather
+ * than "N EXIF" so that is obvious without a footnote.
+ */
 function tallyMetadataKinds(files: readonly FileResult[]): Array<[string, number]> {
   const tally = new Map<string, number>();
   for (const file of files) {

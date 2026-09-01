@@ -164,18 +164,23 @@ describe('human output', () => {
     const { stdout } = await runCli(['check'], root);
 
     expect(stdout).toMatch(/⚠ 3 images contain removable metadata/);
-    expect(stdout).toMatch(/2 EXIF/);
-    expect(stdout).toMatch(/1 XMP/);
+    expect(stdout).toMatch(/2 with EXIF/);
+    expect(stdout).toMatch(/1 with XMP/);
     expect(stdout).toMatch(/Run with --verbose to list them\./);
     // The individual warning files do not get their own blocks by default.
     expect(stdout).not.toMatch(/⚠ assets\/exif\.jpg/);
   });
 
-  it('hides informational notes by default and counts them', async () => {
+  it('does not narrate ordinary image properties', async () => {
+    // Transparency and unused alpha are properties of most PNGs, not findings.
+    // Reporting them produced 55 notes on the first real project.
     const root = copyProject('mixed');
     const { stdout } = await runCli(['check'], root);
-    expect(stdout).toMatch(/3 informational notes \(--verbose to show\)/);
     expect(stdout).not.toMatch(/has meaningful transparency/);
+    expect(stdout).not.toMatch(/every pixel is opaque/);
+    expect(stdout).not.toMatch(/informational note/);
+    // But transparency still speaks up where it changes an answer.
+    expect(stdout).toMatch(/Not safely fixable: transparency present/);
   });
 
   it('totals errors, warnings and clean files', async () => {
@@ -198,13 +203,12 @@ describe('--verbose', () => {
     expect(stdout).not.toMatch(/Run with --verbose to list them\./);
   });
 
-  it('lists informational notes', async () => {
+  it('has no notes section to show when nothing is exceptional', async () => {
+    // The fixture project contains transparent, opaque-alpha and profiled
+    // images. None of that is noteworthy, so --verbose stays quiet about it.
     const root = copyProject('mixed');
     const { stdout } = await runCli(['check', '--verbose'], root);
-    expect(stdout).toMatch(/NOTES/);
-    expect(stdout).toMatch(/· assets\/icons\/logo\.png/);
-    expect(stdout).toMatch(/has meaningful transparency/);
-    expect(stdout).toMatch(/every pixel is opaque/);
+    expect(stdout).not.toMatch(/NOTES/);
   });
 
   it('does not change the exit code', async () => {
@@ -242,7 +246,7 @@ describe('json output', () => {
       withErrors: 7,
       errors: 7,
       warnings: 3,
-      infos: 3,
+      infos: 0,
       unreadable: 0,
       ignored: 1,
     });
@@ -251,11 +255,23 @@ describe('json output', () => {
 
   it('stays exhaustive where the human report summarizes', async () => {
     const { report } = await checkJson('mixed');
-    // Every warning and note is present per file, not collapsed into a count.
+    // Every warning is present per file, not collapsed into a count.
     const warnings = report.files.flatMap((f) => f.findings.filter((x) => x.severity === 'warning'));
-    const infos = report.files.flatMap((f) => f.findings.filter((x) => x.severity === 'info'));
     expect(warnings).toHaveLength(3);
-    expect(infos).toHaveLength(3);
+    expect(warnings.map((w) => w.path).sort()).toEqual([
+      'assets/exif.jpg',
+      'assets/rotated.jpg',
+      'assets/xmp.png',
+    ]);
+  });
+
+  it('keeps alpha detail on ImageInfo even though it is not a finding', async () => {
+    // This is where a future fix planner reads it from, and where an agent
+    // reading --json can still see it.
+    const { report } = await checkJson('mixed');
+    expect(fileIn(report, 'assets/icons/logo.png').image).toMatchObject({ hasAlpha: true, isOpaque: false });
+    expect(fileIn(report, 'assets/opaque.png').image).toMatchObject({ hasAlpha: true, isOpaque: true });
+    expect(fileIn(report, 'assets/compliant.jpg').image).toMatchObject({ hasAlpha: false, isOpaque: null });
   });
 
   it('reports clean: true with warnings present, and exits 0', async () => {
@@ -337,7 +353,7 @@ describe('json output', () => {
       fixable: 'no',
     });
     expect(logo.fixable).toBe('no');
-    expect(findingIn(report, 'assets/icons/logo.png', 'transparency').severity).toBe('info');
+    expect(logo.findings.map((f) => f.check)).toEqual(['format']);
     expect(logo.image).toMatchObject({ hasAlpha: true, isOpaque: false });
   });
 
@@ -366,16 +382,12 @@ describe('json output', () => {
     expect(tagged.findings).toEqual([]);
   });
 
-  it('records an opaque alpha channel as information, never a violation', async () => {
+  it('leaves an image with an unused alpha channel entirely alone', async () => {
     const { report } = await checkJson('mixed');
     const opaque = fileIn(report, 'assets/opaque.png');
-    expect(opaque.status).toBe('info');
-    expect(findingIn(report, 'assets/opaque.png', 'alphaUnused')).toMatchObject({
-      severity: 'info',
-      fixable: 'n/a',
-    });
-    // Info-only files still count as clean in the summary.
-    expect(report.summary.clean).toBe(6);
+    expect(opaque.status).toBe('clean');
+    expect(opaque.findings).toEqual([]);
+    expect(report.summary.infos).toBe(0);
   });
 
   it('reports an unreadable image as an error finding', async () => {
@@ -485,6 +497,7 @@ describe('config discovery', () => {
     const report = JSON.parse(result.stdout) as JsonReport;
     expect(report.root).toBe(fs.realpathSync(root));
     expect(report.summary.checked).toBe(15);
+    expect(report.summary.clean).toBe(6);
   });
 
   it('accepts an explicit --config path', async () => {

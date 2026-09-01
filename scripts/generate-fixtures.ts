@@ -157,12 +157,38 @@ function materializeProjects(): void {
     if (!fs.existsSync(manifestPath)) continue;
 
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as FixtureManifest;
+
+    // Remove anything the manifest no longer lists. Without this a project
+    // keeps every image it was ever given, so counts depend on the machine's
+    // history rather than on what is committed.
+    pruneGeneratedImages(projectDir, new Set(Object.keys(manifest.images)));
+
     for (const [destination, source] of Object.entries(manifest.images)) {
       const target = path.join(projectDir, destination);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.copyFileSync(path.join(IMAGES_DIR, source), target);
     }
   }
+}
+
+const IMAGE_EXTENSIONS = /\.(jpe?g|png|webp)$/i;
+
+/** Delete generated image files under `projectDir` that the manifest does not claim. */
+function pruneGeneratedImages(projectDir: string, wanted: ReadonlySet<string>): void {
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const absolute = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolute);
+        if (fs.readdirSync(absolute).length === 0) fs.rmdirSync(absolute);
+        continue;
+      }
+      if (!entry.isFile() || !IMAGE_EXTENSIONS.test(entry.name)) continue;
+      const relative = path.relative(projectDir, absolute).split(path.sep).join('/');
+      if (!wanted.has(relative)) fs.unlinkSync(absolute);
+    }
+  };
+  walk(projectDir);
 }
 
 export async function generateFixtures(): Promise<void> {

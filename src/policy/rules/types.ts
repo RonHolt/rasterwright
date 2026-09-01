@@ -24,11 +24,6 @@ export function hasMeaningfulAlpha(info: ImageInfo): boolean {
   return info.hasAlpha && info.isOpaque !== true;
 }
 
-/** An alpha channel that exists but is provably unused. */
-export function hasUnusedAlpha(info: ImageInfo): boolean {
-  return info.hasAlpha && info.isOpaque === true;
-}
-
 /** Display labels for formats. */
 export const FORMAT_LABEL = { jpeg: 'JPEG', png: 'PNG', webp: 'WebP' } as const;
 

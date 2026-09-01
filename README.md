@@ -190,8 +190,6 @@ summarized, notes are hidden until you ask. `--json` stays exhaustive.
 | `orientation` | error | A non-normal EXIF orientation flag, when `autoOrient` is on. |
 | `decode` | error | A governed image that could not be read or decoded. |
 | `metadata` | warning | EXIF, XMP, IPTC or other ancillary blocks are present while `stripMetadata` is on. |
-| `transparency` | info | The image has an alpha channel that is actually used. |
-| `alphaUnused` | info | An alpha channel exists but every pixel is opaque. |
 | `colorSpaceUnknown` | info | An ICC profile is present but could not be identified. |
 | `animated` | info | Animated image; v0 does not transform these. |
 | `ruleGlobExcludesTargetFormat` | info | Converting this file would take it out of every rule that governs it. |
@@ -224,12 +222,18 @@ used to determine colour-space status, not counted as clutter.
   unknown. An image carrying an ICC profile Rasterwright cannot identify is a
   note, never an error - a false positive here would train you to ignore the
   tool. It is also not silently counted as compliant.
-- **Transparency is measured, not assumed.** An alpha channel whose every pixel
+- **Transparency is measured, not narrated.** An alpha channel whose every pixel
   is opaque carries no information and does not block a JPEG conversion. When
   opacity could not be determined, Rasterwright assumes transparency, because
   the failure mode of guessing wrong is a black box where a logo used to be.
-  An unused alpha channel is never a violation, and a future `fix` will not
-  rewrite a file just to drop one.
+
+  Having alpha is not itself a finding - it is a property of most PNGs, and
+  reporting it produced 55 notes on the first real project. `hasAlpha` and
+  `isOpaque` stay in `--json` on the image record, and transparency speaks up
+  only where it changes an answer: a `format: jpeg` rule against an image with
+  real alpha, which reports the `format` finding as unfixable. An unused alpha
+  channel is never a violation, and a future `fix` will not rewrite a file just
+  to drop one.
 - **Metadata detection is honest.** Rasterwright reports what Sharp exposes -
   EXIF, XMP, IPTC, Photoshop tags, PNG text - and does not pretend to inventory
   every ancillary chunk.
@@ -293,8 +297,8 @@ ERRORS
 WARNINGS
 
 ⚠ 3 images contain removable metadata
-    2 EXIF
-    1 XMP
+    2 with EXIF
+    1 with XMP
 
     Run with --verbose to list them.
 
@@ -302,13 +306,14 @@ WARNINGS
 7 files with errors
 3 files with warnings
 6 clean
-3 informational notes (--verbose to show)
 1 image matched no rule and was skipped
 ```
 
-`--verbose` expands the warning summary into one block per file and adds a
-`NOTES` section with every informational finding. It does not change the exit
-code.
+`--verbose` expands the warning summary into one block per file, and adds a
+`NOTES` section when there are informational findings to show. It does not
+change the exit code. Notes are for the genuinely exceptional - an
+unidentifiable colour profile, an animated image, a rule whose format target
+escapes its own glob - not for ordinary image properties.
 
 ## `rasterwright check --json`
 
@@ -331,7 +336,7 @@ another image next to it.
     "withErrors": 7,
     "errors": 7,
     "warnings": 3,
-    "infos": 3,
+    "infos": 0,
     "unreadable": 0,
     "ignored": 1
   },
@@ -380,16 +385,6 @@ another image next to it.
           "allowed": "PNG",
           "fixable": "yes",
           "message": "contents are WebP but the extension says PNG; fix would rename the file to match its contents, so it will need --allow-renames"
-        },
-        {
-          "path": "assets/logo-webp.png",
-          "rule": "(built-in)",
-          "check": "transparency",
-          "severity": "info",
-          "actual": null,
-          "allowed": null,
-          "fixable": "n/a",
-          "message": "has meaningful transparency"
         }
       ],
       "fixable": "yes"

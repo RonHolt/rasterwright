@@ -100,6 +100,9 @@ export async function inspect(root: string, relativePath: string): Promise<Inspe
     hasIptc: metadata.iptc !== undefined,
     // Photoshop's TIFF tag and PNG text chunks. Ancillary, but neither EXIF nor
     // XMP, so they get their own bucket rather than being lumped in or ignored.
+    // Rarely populated in practice: this Sharp build decodes PNG with libspng,
+    // which does not surface tEXt chunks, so a PNG carrying one reads as clean.
+    // Reported when Sharp does expose it; never inferred.
     hasOtherMetadata:
       metadata.tifftagPhotoshop !== undefined ||
       (metadata.comments !== undefined && metadata.comments.length > 0),
