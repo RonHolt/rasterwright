@@ -7,7 +7,7 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `21f0b5a docs: record byte-budget phase as complete in implementation
+- HEAD: `dec36dd feat: add visual fix review`
   status`, plus uncommitted work implementing `review`.
 - Implemented commands: `check` (`--verbose`, `--json`), `fix --dry-run`
   (`--json`, `--allow-renames`), `fix` (`--allow-renames`, `--json`,
@@ -35,11 +35,11 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current phase
 
-**`rasterwright init`.** A starter `.rasterwright.yml` generated from what a
-repo already contains: one scan, a handful of conservative heuristics, no
-interactive prompts, `--bare` for a plain commented template, and the
-`.rasterwright/` line written into `.gitignore` (the one command permitted to
-touch it). Status: not started. See `03` section 3 and `04` section 9.
+**`rasterwright init`.** Starter config from a read-only scan: group
+images by directory, conservative maxWidth/maxBytes from percentiles
+rounded up a ladder, closure loop so few files fail, `--bare` template,
+refuse to overwrite without `--force`, append `.rasterwright/` to
+`.gitignore` in a git repo unless opted out. Status: not started.
 
 ## Non-negotiable invariants
 
@@ -206,7 +206,7 @@ touch it). Status: not started. See `03` section 3 and `04` section 9.
    explicit failure.
 5. Idempotence hardening tests (done, folded into the phases above)
 6. `review` (done): static HTML, before-copies, exceptions first
-7. `init` (current)
+7. `init` (current) (current)
 8. Agent-facing docs (SKILL.md), packaging polish
 
 ## Human validation pending
