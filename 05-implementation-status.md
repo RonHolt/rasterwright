@@ -7,7 +7,7 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `3c3076e feat: add safe fix execution foundation`, plus uncommitted
+- HEAD: `9e7195f feat: execute deterministic image fixes`
   work wiring the executor (phase 2b).
 - Implemented commands: `check` (`--verbose`, `--json`), `fix --dry-run`
   (`--json`, `--allow-renames`), and `fix` (`--allow-renames`, `--json`,
@@ -26,47 +26,15 @@ behaviour in `README.md`; this file only records where the implementation is.
 | Read-only `fix --dry-run` (pure planner) | `2860c4e` |
 | Batch plan preflight (`blocked` status, collisions fixture) | `7974008` |
 | Execution foundation, unwired (phase 2a) | `3c3076e` |
-| Execution wired (phase 2b) | uncommitted |
+| Execution wired (phase 2b) | `9e7195f` |
 
 ## Current phase
 
-**Safe execution, complete.** `rasterwright fix` executes plans. See `04`
-section 18 for the decisions behind this phase, and section 17 for the
-foundation it was built on.
-
-Landed in 2b:
-
-- `operations/execute.ts`: per-file orchestration. Reads the original once,
-  renders the candidate into a Buffer, inspects it with `inspectBuffer` under
-  the *target* path, evaluates it against the target path's effective rule, and
-  only then writes. `skipReasonFor()`, `statusForSkip()` and `verifyCandidate()`
-  are pure and unit-tested without a filesystem.
-- `runFix()` in `run-fix.ts`: preconditions, startup recovery and sweep, signal
-  handlers, bounded concurrency, the report. `planRun` is shared with the dry
-  run, so the executor runs against the plan set the dry run described.
-- `operations/backup.ts`: `--backup-dir`, mirrored not flattened, refusing to
-  overlap the project or to overwrite a backup of differing bytes.
-- `utils/signal.ts`: first SIGINT sets a flag, in-flight writes complete, temp
-  cleanup happens after the worker pool drains, second signal exits.
-- `cli/render/fix.ts` and `cli/render/common.ts`: the fix report, exceptions
-  first, sharing the plan renderer's layout helpers and `renderOperation`.
-- `--no-git` and `--backup-dir` on the `fix` command; the git precondition and
-  per-file dirty/untracked/ignored warnings.
-- `RASTERWRIGHT_STALL_MS`, a third test-only hook in `atomic.ts`, so the SIGINT
-  test fires at a deterministic edge.
-- `FixReport.unrecovered`, and `FixSummary.bytesBefore/After` documented as
-  covering only the files that changed.
-- A new fixture project, `conversion`: format conversion end to end, with real
-  transparency to preserve. It reaches a clean `check` after one run, which
-  makes it the project the strict idempotence procedure runs against.
-
-Also landed, from the review pass over 2b (`04` section 18, items 12 to 18):
-a stale-plan guard, a catch-all so `executeFile` cannot throw, honest quality
-wording in the fix report, write-scoped git and sweep sets, lazy `--backup-dir`
-creation, reported temp residue, `--json` on an exit 2, and strict command-line
-validation.
-
-Status: 2b complete and green.
+**Byte-budget execution.** In-memory downward quality search for JPEG and
+WebP against `maxBytes` (start, binary search to floor, highest fitting
+quality, explicit failure below floor); PNG lossless max-effort attempt
+with explicit failure; budget-driven plans stop being skipped. Status:
+not started.
 
 ## Non-negotiable invariants
 
@@ -173,7 +141,7 @@ Status: 2b complete and green.
 1. Batch preflight (done)
 2. Safe execution (done: 2a foundation, 2b wiring)
 3. (folded into 2a) Deterministic operations through one Sharp pipeline
-4. Byte-budget execution: quality search JPEG/WebP, lossless PNG attempt,
+4. Byte-budget execution (current): quality search JPEG/WebP, lossless PNG attempt,
    explicit failure. The next phase.
 5. Idempotence hardening tests
 6. `review` (static HTML, before-copies, exceptions first)
