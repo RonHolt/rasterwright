@@ -267,6 +267,32 @@ export interface CheckReport {
   root: string;
   summary: CheckSummary;
   files: FileResult[];
+  /**
+   * Run diagnostics, attached by the CLI wrapper rather than by `check` itself.
+   *
+   * Sentences about the run rather than about a file: a `.gitignore` that could
+   * not be applied, a review directory that could not be read. The command
+   * layer prints them to stderr and `--json` merges them into the document, so
+   * a caller parsing stdout sees everything a human would have seen. Optional
+   * because the report is produced without them; `renderJson` always sets it.
+   */
+  diagnostics?: string[];
+}
+
+/**
+ * What `--json` prints when nothing ran: `rasterwright: <error>` as a document.
+ *
+ * Deliberately not a `CheckReport` with zero files, for the reason
+ * `cli/failure.ts` gives - a report saying "0 errors" would be a lie in exactly
+ * the situation where being believed matters most. Written by the CLI wrapper
+ * and by nothing else.
+ */
+export interface CliFailure {
+  rasterwrightVersion: string;
+  /** The error message, the same sentence stderr carried. */
+  error: string;
+  /** Always `EXIT_ERROR`. A failure envelope exists only on that path. */
+  exitCode: number;
 }
 
 /*
@@ -568,6 +594,8 @@ export interface FixPlanReport {
    * repeating it would bury the files a fix would actually touch.
    */
   files: FilePlan[];
+  /** Run diagnostics, attached by the CLI wrapper. See `CheckReport.diagnostics`. */
+  diagnostics?: string[];
 }
 
 /*

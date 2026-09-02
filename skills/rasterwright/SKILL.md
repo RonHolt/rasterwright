@@ -37,10 +37,14 @@ Exit `0` clean, `1` error-level findings exist, `2` nothing ran (a config or
 runtime failure). With `--json`, stdout carries exactly one JSON document and
 every diagnostic goes to stderr, so piping to a parser is safe. On exit `2` the
 document is a failure envelope with `rasterwrightVersion`, `error` and
-`exitCode`, not a report with zero files.
+`exitCode`, not a report with zero files. That envelope is `CliFailure` in
+`src/types.ts`: it is written by the CLI wrapper on the failure path, and
+`exitCode` appears nowhere else in the output.
 
 Top level: `rasterwrightVersion`, `clean`, `configPath`, `root`, `summary`,
-`files`, `diagnostics`.
+`files`, `diagnostics`. `diagnostics` is attached by the CLI wrapper rather than
+by the check itself - the same sentences stderr carried, repeated in the
+document so a caller parsing stdout sees everything a human would have.
 
 Each entry in `files` has `path`, `status`, `matchedGlobs`, `policy`, `image`,
 `findings`, `fixable`, and an `error` string when the file could not be decoded.

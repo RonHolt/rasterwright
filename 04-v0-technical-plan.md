@@ -868,11 +868,14 @@ message can say so.
 **5. Existing paths come from the scan plus one `lstat` per uncovered target.**
 Discovery already walked the tree, so every image file in the project is known
 for free; `RunCheckResult` exposes it as `discovered`. It is deliberately *not*
-on `CheckReport` - it is not a finding, and `check --json` is a published shape
-that must not move. The scan is not sufficient on its own, because a rename
-target need not be an image: a directory, a symlink, a git-ignored file or a
-`.txt` all occupy the name. So every planned rename target the scan did not
-already cover gets one `fs.lstatSync(abs, { throwIfNoEntry: false })`. `lstat`
+on `CheckReport` - it is not a finding, and `check --json` is a shape that must
+not move. (Superseded in detail by 22.5: the JSON shape is held stable across a
+phase so consumers, tests and the skill can rely on it within that phase, but it
+is not yet a public API contract. "Must not move" here means "do not add fields
+to it casually", not "it is frozen forever".) The scan is not sufficient on its
+own, because a rename target need not be an image: a directory, a symlink, a
+git-ignored file or a `.txt` all occupy the name. So every planned rename target
+the scan did not already cover gets one `fs.lstatSync(abs, { throwIfNoEntry: false })`. `lstat`
 rather than `stat`, so a dangling symlink counts as occupied - resolving the
 link would report the name as free and then clobber the link itself.
 

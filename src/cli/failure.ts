@@ -1,5 +1,6 @@
 import { EXIT_ERROR, RasterwrightError } from '../utils/errors.js';
 import { readVersion } from './version.js';
+import type { CliFailure } from '../types.js';
 import type { Streams } from './check.js';
 
 /**
@@ -23,13 +24,12 @@ export function reportFailure(error: unknown, json: boolean, streams: Streams): 
   if (hint !== undefined) streams.err(`  ${hint}`);
 
   if (json) {
-    streams.out(
-      JSON.stringify(
-        { rasterwrightVersion: safeVersion(), error: message, exitCode: EXIT_ERROR },
-        null,
-        2,
-      ),
-    );
+    const failure: CliFailure = {
+      rasterwrightVersion: safeVersion(),
+      error: message,
+      exitCode: EXIT_ERROR,
+    };
+    streams.out(JSON.stringify(failure, null, 2));
   }
 
   return EXIT_ERROR;

@@ -2,10 +2,42 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { cleanupProjects, copyProject, runCli } from '../helpers/project.js';
+import { FIXTURE_PROJECTS, cleanupProjects, copyProject, runCli } from '../helpers/project.js';
 import { snapshotDirs, snapshotTree } from '../helpers/snapshot.js';
 
 afterAll(cleanupProjects);
+
+/**
+ * Every fixture project, read off disk rather than listed here.
+ *
+ * A hand-written list is a list that goes stale: a fixture added for some other
+ * suite would quietly never be checked for read-onlyness, and read-onlyness is
+ * the one property that has to hold for all of them. `WHAT_IT_EXERCISES` still
+ * has to name each project, so adding a fixture makes this file fail until
+ * someone says what it is - but the coverage itself comes from the directory.
+ */
+const PROJECTS = fs
+  .readdirSync(FIXTURE_PROJECTS, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
+
+/** Why each fixture is worth running read-only, in one line. */
+const WHAT_IT_EXERCISES: Record<string, string> = {
+  autoorient: 'a rule that turns autoOrient off, so a rewrite would have to preserve the flag',
+  'broken-config': 'a malformed config, which fails before the scan',
+  budget: 'a byte budget, where the plan is a re-encode at a chosen quality',
+  clean: 'a project with nothing to report',
+  collisions: 'plans that would collide, which is the one step that lstats paths outside the scan',
+  conversion: 'a format conversion, the plan most likely to want a rename',
+  corrupt: 'an image the decoder rejects',
+  crossrule: 'a conversion that moves a file out from under the rule that planned it',
+  depth: 'a source too deep to re-encode',
+  maxheight: 'a straightforward resize',
+  mixed: 'errors, warnings, renames and ungoverned files together',
+  overlapping: 'overlapping globs, where a later match overrides one property at a time',
+  'warnings-only': 'findings that are all warnings, so nothing is an error',
+};
 
 /**
  * The acceptance criterion for this layer.
@@ -34,8 +66,15 @@ async function assertReadOnly(project: string, args: string[]): Promise<void> {
 }
 
 describe('check is read-only', () => {
-  it('changes nothing in a project with errors', async () => {
-    await assertReadOnly('mixed', ['check']);
+  it('covers every fixture project, and every one of them is described', () => {
+    // The whole point of deriving the list: if this file is ever out of step
+    // with the fixtures directory, that is the failure, not a silent gap.
+    expect(PROJECTS.length).toBe(fs.readdirSync(FIXTURE_PROJECTS).length);
+    expect(Object.keys(WHAT_IT_EXERCISES).sort()).toEqual(PROJECTS);
+  });
+
+  it.each(PROJECTS)('changes nothing in %s', async (project) => {
+    await assertReadOnly(project, ['check']);
   });
 
   it('changes nothing with --json', async () => {
@@ -44,30 +83,6 @@ describe('check is read-only', () => {
 
   it('changes nothing with --verbose', async () => {
     await assertReadOnly('mixed', ['check', '--verbose']);
-  });
-
-  it('changes nothing in a project whose findings are all warnings', async () => {
-    await assertReadOnly('warnings-only', ['check']);
-  });
-
-  it('changes nothing when a rule turns autoOrient off', async () => {
-    await assertReadOnly('autoorient', ['check']);
-  });
-
-  it('changes nothing in a clean project', async () => {
-    await assertReadOnly('clean', ['check']);
-  });
-
-  it('changes nothing when an image is corrupt', async () => {
-    await assertReadOnly('corrupt', ['check']);
-  });
-
-  it('changes nothing when the config is malformed', async () => {
-    await assertReadOnly('broken-config', ['check']);
-  });
-
-  it('changes nothing in a project whose plans would collide', async () => {
-    await assertReadOnly('collisions', ['check']);
   });
 
   it('creates no cache or review directory', async () => {
@@ -119,57 +134,27 @@ describe('check is read-only', () => {
  * property. It will keep being true after the executor does exist.
  */
 describe('fix --dry-run is read-only', () => {
-  it('changes nothing in a project with errors', async () => {
-    await assertReadOnly('mixed', ['fix', '--dry-run']);
+  /**
+   * Every fixture, planned both ways.
+   *
+   * `--allow-renames` is run against all of them rather than only the projects
+   * that convert a format today, because which fixture produces a rename is a
+   * property of the planner and can change; the promise that planning one
+   * writes nothing cannot. `collisions` is the sharpest of these: preflight is
+   * the one step that reaches outside the scan, lstatting names a rename would
+   * land on, and probing a name must neither create it nor touch its occupant.
+   */
+  it.each(PROJECTS)('changes nothing in %s, with or without --allow-renames', async (project) => {
+    await assertReadOnly(project, ['fix', '--dry-run']);
+    await assertReadOnly(project, ['fix', '--dry-run', '--allow-renames']);
   });
 
   it('changes nothing with --json', async () => {
     await assertReadOnly('mixed', ['fix', '--dry-run', '--json']);
   });
 
-  it('changes nothing with --allow-renames', async () => {
-    // Permission to *plan* a rename is not permission to perform one, and this
-    // build performs nothing regardless.
-    await assertReadOnly('mixed', ['fix', '--dry-run', '--allow-renames']);
-  });
-
   it('changes nothing with --json and --allow-renames together', async () => {
     await assertReadOnly('mixed', ['fix', '--dry-run', '--json', '--allow-renames']);
-  });
-
-  it('changes nothing in a project whose findings are all warnings', async () => {
-    await assertReadOnly('warnings-only', ['fix', '--dry-run']);
-  });
-
-  it('changes nothing in a clean project', async () => {
-    await assertReadOnly('clean', ['fix', '--dry-run']);
-  });
-
-  it('changes nothing when an image is corrupt', async () => {
-    await assertReadOnly('corrupt', ['fix', '--dry-run']);
-  });
-
-  it('changes nothing when the config is malformed', async () => {
-    await assertReadOnly('broken-config', ['fix', '--dry-run']);
-  });
-
-  it('changes nothing when a rewrite has to preserve an orientation flag', async () => {
-    await assertReadOnly('autoorient', ['fix', '--dry-run']);
-  });
-
-  it('changes nothing when a source is too deep to re-encode', async () => {
-    await assertReadOnly('depth', ['fix', '--dry-run']);
-    await assertReadOnly('depth', ['fix', '--dry-run', '--allow-renames']);
-  });
-
-  it('changes nothing in a project whose plans would collide', async () => {
-    // Preflight is the one step that reads paths outside the scan, via lstat.
-    // Probing a name must not create it, and must not touch the occupant.
-    await assertReadOnly('collisions', ['fix', '--dry-run']);
-  });
-
-  it('changes nothing when a collision is discovered with --allow-renames', async () => {
-    await assertReadOnly('collisions', ['fix', '--dry-run', '--allow-renames']);
   });
 
   it('changes nothing when a real fix refuses its preconditions', async () => {

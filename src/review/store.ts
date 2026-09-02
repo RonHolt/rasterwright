@@ -68,17 +68,20 @@ export function indexPathFor(reviewDir: string): string {
  * fails `EEXIST`, and the run would fail every file with an errno instead of one
  * sentence naming the link.
  */
-export function resolveReviewDir(root: string): string {
+export function resolveReviewDir(root: string, hint: string = FIX_HINT): string {
   const base = path.join(root, '.rasterwright');
   const review = reviewDirFor(root);
   for (const candidate of [base, review, beforeDirFor(review)]) {
-    requireDirectoryOrAbsent(candidate);
+    requireDirectoryOrAbsent(candidate, hint);
   }
   return review;
 }
 
+/** What to suggest when the path is obstructed. `review` passes its own; `fix` takes this one. */
+const FIX_HINT = 'Move it out of the way, or rerun with --no-review to fix the images without keeping copies.';
+
 /** Refuse anything at `target` that is not a real directory. Absent is fine. */
-function requireDirectoryOrAbsent(target: string): void {
+function requireDirectoryOrAbsent(target: string, hint: string): void {
   let stats: fs.Stats;
   try {
     stats = fs.lstatSync(target);
@@ -86,18 +89,15 @@ function requireDirectoryOrAbsent(target: string): void {
     // Absent is the ordinary case: nothing has been created yet.
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw new RasterwrightError(
-      `could not check ${target}, where this run would keep its review data: ${messageOf(error)}`,
-      'Rerun with --no-review to fix the images without keeping copies.',
+      `could not check ${target}, where review data is kept: ${messageOf(error)}`,
+      hint,
     );
   }
 
   if (stats.isDirectory()) return;
 
   const what = stats.isSymbolicLink() ? 'is a symlink' : 'exists and is not a directory';
-  throw new RasterwrightError(
-    `${target} ${what}, so this run cannot keep its review data`,
-    'Move it out of the way, or rerun with --no-review to fix the images without keeping copies.',
-  );
+  throw new RasterwrightError(`${target} ${what}, so review data cannot be kept there`, hint);
 }
 
 /** Extensions a before-copy may carry, which is also what garbage collection recognises. */
@@ -273,14 +273,36 @@ export function pruneRuns(manifest: ReviewManifest): ReviewRun[] {
  * corrupt on the next run and takes the record of every retained run with it.
  */
 export async function writeManifest(reviewDir: string, manifest: ReviewManifest): Promise<void> {
+  await writeAtomically(reviewDir, manifestPathFor(reviewDir), '.manifest', `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+/**
+ * Write the rendered page the same way, for a second reason as well.
+ *
+ * `index.html` is a path a user can replace with anything, including a symlink
+ * pointing outside the project. Writing through an opened target would follow
+ * that link and put Rasterwright's output somewhere the path does not name;
+ * renaming onto it replaces the link itself and writes nothing through it. Same
+ * rule the review directory follows, one level down.
+ */
+export async function writePage(reviewDir: string, html: string): Promise<void> {
+  await writeAtomically(reviewDir, indexPathFor(reviewDir), '.index', html);
+}
+
+/** Temp file, fsync, rename, fsync the directory. Never writes through `target`. */
+async function writeAtomically(
+  reviewDir: string,
+  target: string,
+  tempPrefix: string,
+  contents: string,
+): Promise<void> {
   await fsp.mkdir(reviewDir, { recursive: true });
-  const target = manifestPathFor(reviewDir);
-  const temp = path.join(reviewDir, `.manifest-${process.pid}-${randomBytes(6).toString('hex')}.json`);
+  const temp = path.join(reviewDir, `${tempPrefix}-${process.pid}-${randomBytes(6).toString('hex')}.tmp`);
 
   try {
     const handle = await fsp.open(temp, 'wx');
     try {
-      await handle.writeFile(`${JSON.stringify(manifest, null, 2)}\n`);
+      await handle.writeFile(contents);
       await handle.sync();
     } finally {
       await handle.close();

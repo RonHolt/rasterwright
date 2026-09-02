@@ -367,7 +367,7 @@ defaults:
 
 rules:
   # 75 images. Widths up to 2560 (90th percentile 1437); sizes up to 731 KB (95th percentile 227 KB).
-  "assets/src/images/**/*.{jpg,jpeg,png,webp}":
+  'assets/src/images/**/*.{jpg,jpeg,png,webp}':
     maxWidth: 2000
     maxBytes: 300kb
     # maxHeight: 2000
@@ -478,6 +478,10 @@ Rasterwright
 
 ERRORS
 
+✗ assets/cmyk.jpg
+
+    colorSpace    cmyk              expected: sRGB
+
 ✗ assets/heavy.jpg
 
     maxBytes      457 KB            allowed: 200 KB
@@ -503,6 +507,11 @@ ERRORS
 ✗ assets/oversized.jpg
 
     maxWidth      2000 px           allowed: 1200 px
+
+✗ assets/rotated.jpg
+
+    orientation   6                 expected: 1 (normal)
+    EXIF orientation 6; stored as 600x400, displayed as 400x600
 
 WARNINGS
 

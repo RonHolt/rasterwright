@@ -56,6 +56,13 @@ function manifestResidue(root: string): string[] {
   return fs.readdirSync(directory).filter((name) => name.startsWith('.manifest-')).sort();
 }
 
+/** A fixture project, fixed once, so there is review data to render. */
+async function fixedProject(project = 'mixed'): Promise<string> {
+  const root = copyGitProject(project);
+  await runCli(['fix', '--allow-renames'], root, NO_BROWSER);
+  return root;
+}
+
 describe('fix retains what review needs', () => {
   it('copies every original it wrote, and nothing else', async () => {
     const root = copyGitProject('mixed');
@@ -502,6 +509,63 @@ describe('review --clean', () => {
     expect(result.code).toBe(0);
     expect(result.stderr).toMatch(/no review directory to remove/);
     expect(fs.existsSync(path.join(root, '.rasterwright'))).toBe(false);
+  });
+});
+
+describe('review and an unusable review path', () => {
+  /**
+   * `review` reads a manifest and writes a page under `.rasterwright/`, so it
+   * makes the same up-front check `fix` does. A link at any level would have it
+   * read and write somewhere the path does not name.
+   */
+  const obstructions: [string, string[]][] = [
+    ['.rasterwright itself', ['.rasterwright']],
+    ['.rasterwright/review', ['.rasterwright', 'review']],
+    ['the before/ store', ['.rasterwright', 'review', 'before']],
+  ];
+
+  for (const [what, parts] of obstructions) {
+    it(`refuses when ${what} is a symlink, and follows it nowhere`, async () => {
+      const root = await fixedProject();
+      const elsewhere = path.join(root, '..', `${path.basename(root)}-${parts.length}-store`);
+      const target = path.join(root, ...parts);
+      fs.mkdirSync(elsewhere, { recursive: true });
+      // Move the real directory aside and put a link in its place, so the run
+      // would work perfectly if it were willing to follow one.
+      fs.renameSync(target, path.join(elsewhere, 'real'));
+      fs.symlinkSync(path.join(elsewhere, 'real'), target);
+      const before = snapshotTree(path.join(elsewhere, 'real'));
+
+      const result = await runCli(['review', '--no-open'], root, NO_BROWSER);
+
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/is a symlink/);
+      expect(result.stderr).not.toMatch(/--no-review/);
+      expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
+      expect(snapshotTree(path.join(elsewhere, 'real'))).toEqual(before);
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    });
+  }
+
+  it('replaces an index.html that is a symlink instead of writing through it', async () => {
+    // The page is renamed onto its path, so a link there is unlinked rather
+    // than followed. Anything else would let `review` write into a file
+    // outside the project that a user pointed at.
+    const root = await fixedProject();
+    const decoy = path.join(root, 'decoy.html');
+    fs.writeFileSync(decoy, 'not the page');
+    const index = path.join(reviewDir(root), 'index.html');
+    fs.rmSync(index, { force: true });
+    fs.symlinkSync(decoy, index);
+
+    const result = await runCli(['review', '--no-open'], root, NO_BROWSER);
+
+    expect(result.code).toBe(0);
+    expect(fs.lstatSync(index).isFile()).toBe(true);
+    expect(fs.readFileSync(index, 'utf8').startsWith('<!doctype html>')).toBe(true);
+    expect(fs.readFileSync(decoy, 'utf8')).toBe('not the page');
+    expect(manifestResidue(root)).toEqual([]);
+    expect(fs.readdirSync(reviewDir(root)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 });
 

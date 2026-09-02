@@ -9,8 +9,10 @@ import {
   normalizeRetain,
   pruneRuns,
   readManifest,
+  resolveReviewDir,
   reviewDirFor,
   writeManifest,
+  writePage,
 } from './review/store.js';
 import { RasterwrightError } from './utils/errors.js';
 import { sha256 } from './utils/hash.js';
@@ -94,6 +96,14 @@ export async function runReview(
     return result;
   }
 
+  // Past `--clean`, every remaining path both reads and writes under
+  // `.rasterwright/`, so the same up-front check `fix` makes applies here: a
+  // symlink at any level would have this command read a manifest and drop a
+  // page somewhere the path does not name. `--clean` is deliberately left
+  // outside the check, because unlinking a link is exactly the right answer to
+  // finding one.
+  resolveReviewDir(config.root, REVIEW_HINT);
+
   const manifest = readManifest(reviewDir);
   if (manifest === undefined) {
     result.empty = true;
@@ -122,11 +132,16 @@ export async function runReview(
     storeBytes: beforeStoreBytes(reviewDir),
   });
 
-  const indexPath = indexPathFor(reviewDir);
-  await fsp.writeFile(indexPath, page, 'utf8');
-  result.indexPath = indexPath;
+  // Written the way the manifest is: into a temp file, then renamed over the
+  // target. An `index.html` a user has replaced with a symlink is replaced in
+  // turn, rather than being written through to wherever it pointed.
+  await writePage(reviewDir, page);
+  result.indexPath = indexPathFor(reviewDir);
   return result;
 }
+
+/** `--no-review` is a `fix` flag, so it is no use to anyone reading this command's error. */
+const REVIEW_HINT = 'Move it out of the way, then rerun `rasterwright fix` to record a run there.';
 
 /**
  * What is at each entry's output path right now.

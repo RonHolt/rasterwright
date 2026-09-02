@@ -17,7 +17,7 @@ import {
   spawnCli,
 } from '../helpers/project.js';
 import { snapshotDirs, snapshotTree } from '../helpers/snapshot.js';
-import type { FixReport } from '../../src/types.js';
+import type { FixReport, FixStatus } from '../../src/types.js';
 
 afterAll(cleanupProjects);
 
@@ -54,6 +54,43 @@ function exists(root: string, ...parts: string[]): boolean {
 async function jsonReport(root: string, args: string[]): Promise<FixReport> {
   const result = await runCli(['fix', '--json', ...args], root);
   return JSON.parse(result.stdout) as FixReport;
+}
+
+/**
+ * The status the report gives one named file.
+ *
+ * `results` carries every file that is *not* `unchanged`; an unchanged file is
+ * counted in the summary and deliberately omitted, so its absence from that
+ * list is the report saying `unchanged` about it. Reading it through one
+ * function keeps a test able to name a path and assert what happened to that
+ * path, rather than inferring it from a whole-tree hash.
+ */
+function statusOf(report: FixReport, filePath: string): FixStatus {
+  return report.results.find((result) => result.path === filePath)?.status ?? 'unchanged';
+}
+
+/** Why one named file ended the way it did, or `undefined` when the report gives no reason. */
+function reasonFor(report: FixReport, filePath: string): string | undefined {
+  return report.results.find((result) => result.path === filePath)?.reason;
+}
+
+/**
+ * Every mutating filesystem step `RASTERWRIGHT_TRACE_WRITES` recorded.
+ *
+ * The file is created by the first write, so a run that wrote nothing leaves no
+ * file at all. Absent and empty are the same answer, and both are the one this
+ * suite wants to assert.
+ */
+function tracedWrites(tracePath: string): string[] {
+  if (!fs.existsSync(tracePath)) return [];
+  return fs.readFileSync(tracePath, 'utf8').split('\n').filter((line) => line !== '');
+}
+
+/** The content hash of one file under `root`, so a test can pin a single image. */
+function hashOf(root: string, filePath: string): string {
+  const hash = hashTree(root).get(filePath);
+  expect(hash, `${filePath} is missing from ${root}`).toBeDefined();
+  return hash as string;
 }
 
 describe('fix on a mixed project', () => {
@@ -311,6 +348,77 @@ describe('fix enforcing a byte budget', () => {
     await runCli(['fix'], second);
 
     expect(hashTree(second)).toEqual(hashTree(first));
+  });
+});
+
+/**
+ * Idempotence, asserted one file at a time.
+ *
+ * The suite already proves that a second run leaves the whole tree
+ * byte-identical, which is the property that matters and the one most likely to
+ * catch a regression. What it does not do is say *which* file was at risk. Both
+ * cases below are second runs over a file whose first run took a different path
+ * through the executor - one that succeeded by rewriting pixels, one that
+ * failed after trying - and each is named so a failure points at the mechanism
+ * rather than at a tree of fifteen images.
+ */
+describe('second-run idempotence, file by file', () => {
+  it('leaves a converted colour space exactly as it found it', async () => {
+    // `assets/cmyk.jpg` is the sharpest of the rewrite cases. Its first run
+    // decodes CMYK, converts to sRGB and re-encodes; a second run has to read
+    // the output it just wrote, agree that it is compliant, and stop. Deciding
+    // that a colour space "still looks wrong" would re-encode a JPEG that has
+    // already been through one generation loss, every single run.
+    const root = copyGitProject('mixed');
+
+    const first = await jsonReport(root, ['--allow-renames']);
+    expect(statusOf(first, 'assets/cmyk.jpg')).toBe('fixed');
+    const converted = hashOf(root, 'assets/cmyk.jpg');
+
+    const trace = path.join(scratchDir('trace-cmyk'), 'writes.log');
+    const second = await runCli(['fix', '--allow-renames', '--json'], root, {
+      RASTERWRIGHT_TRACE_WRITES: trace,
+    });
+    const report = JSON.parse(second.stdout) as FixReport;
+
+    expect(statusOf(report, 'assets/cmyk.jpg')).toBe('unchanged');
+    expect(hashOf(root, 'assets/cmyk.jpg')).toBe(converted);
+    expect(tracedWrites(trace)).toEqual([]);
+    expect(residue(root)).toEqual([]);
+
+    // The conversion held: a second run reading it as CMYK again would have
+    // planned a rewrite instead of reporting nothing to do.
+    const inspected = await inspect(root, 'assets/cmyk.jpg');
+    expect(inspected.ok).toBe(true);
+    if (!inspected.ok) return;
+    expect(inspected.info.colorSpaceStatus).toBe('srgb');
+  });
+
+  it('fails the impossible PNG identically, without touching it either time', async () => {
+    // `assets/noisy.png` is lossless and incompressible under a 200 KB ceiling,
+    // so there is no dial to turn and the file can only ever fail. The failure
+    // has to be stable: the same sentence, the same untouched bytes, and no
+    // write attempt on the second run. A failure that re-encoded hopefully each
+    // time would burn the whole search on every invocation and still fail.
+    const root = copyGitProject('budget');
+    const original = hashOf(root, 'assets/noisy.png');
+
+    const first = await jsonReport(root, []);
+    expect(statusOf(first, 'assets/noisy.png')).toBe('failed');
+    expect(reasonFor(first, 'assets/noisy.png')).toMatch(/PNG is lossless/);
+    // Failed means failed: the original is exactly what it was before the run.
+    expect(hashOf(root, 'assets/noisy.png')).toBe(original);
+
+    const trace = path.join(scratchDir('trace-png'), 'writes.log');
+    const second = await runCli(['fix', '--json'], root, { RASTERWRIGHT_TRACE_WRITES: trace });
+    const report = JSON.parse(second.stdout) as FixReport;
+
+    expect(second.code).toBe(1);
+    expect(statusOf(report, 'assets/noisy.png')).toBe('failed');
+    expect(reasonFor(report, 'assets/noisy.png')).toBe(reasonFor(first, 'assets/noisy.png'));
+    expect(hashOf(root, 'assets/noisy.png')).toBe(original);
+    expect(tracedWrites(trace)).toEqual([]);
+    expect(residue(root)).toEqual([]);
   });
 });
 
