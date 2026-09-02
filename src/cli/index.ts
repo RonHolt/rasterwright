@@ -5,6 +5,7 @@ import { checkCommand } from './check.js';
 import { fixCommand } from './fix.js';
 import { initCommand } from './init.js';
 import { reviewCommand } from './review.js';
+import { createStreams } from './streams.js';
 import { readVersion } from './version.js';
 import { EXIT_CLEAN, EXIT_ERROR, RasterwrightError } from '../utils/errors.js';
 
@@ -36,10 +37,9 @@ function parseKeep(value: string): number {
   return positiveInteger('--keep', value);
 }
 
-const streams = {
-  out: (text: string) => process.stdout.write(`${text}\n`),
-  err: (text: string) => process.stderr.write(`${text}\n`),
-};
+// Installed before anything writes, so a reader that closes early - `| head`, a
+// quit from `less` - never turns into a stack trace. See `createStreams`.
+const streams = createStreams();
 
 program
   .name('rasterwright')
@@ -172,10 +172,10 @@ async function main(): Promise<void> {
       return;
     }
     if (error instanceof RasterwrightError) {
-      process.stderr.write(`rasterwright: ${error.message}\n`);
-      if (error.hint !== undefined) process.stderr.write(`  ${error.hint}\n`);
+      streams.err(`rasterwright: ${error.message}`);
+      if (error.hint !== undefined) streams.err(`  ${error.hint}`);
     } else {
-      process.stderr.write(`rasterwright: ${(error as Error).stack ?? String(error)}\n`);
+      streams.err(`rasterwright: ${(error as Error).stack ?? String(error)}`);
     }
     process.exitCode = EXIT_ERROR;
   }

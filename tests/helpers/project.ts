@@ -179,3 +179,52 @@ export function residue(root: string): string[] {
   walk(root);
   return found.sort();
 }
+
+/**
+ * Run the CLI against a reader that closes stdout before the CLI is done with it.
+ *
+ * This is `rasterwright check --json | head -60`, or a `less` the user quit out
+ * of: the read end of the pipe goes away and the next write fails with `EPIPE`.
+ * Node reports that as an `'error'` event on `process.stdout`, so without a
+ * handler it is an unhandled error - a stack trace printed over the terminal for
+ * something the user did on purpose.
+ *
+ * `when` picks which of the two shapes to exercise. `'immediately'` closes the
+ * pipe before the CLI writes anything, which fails every write and is the only
+ * one that reproduces reliably regardless of how much a fixture prints.
+ * `'after-first-chunk'` is closer to what `head` actually does, but output small
+ * enough to fit in the pipe buffer is already accepted by the kernel before the
+ * reader goes, so it may well succeed - it is here to prove that case is quiet
+ * too, not to force the failure.
+ */
+export function runCliWithClosedStdout(
+  args: string[],
+  cwd: string,
+  when: 'immediately' | 'after-first-chunk',
+  env: NodeJS.ProcessEnv = {},
+): Promise<CliResult> {
+  const child = spawn(process.execPath, ['--import', TSX_LOADER, CLI_ENTRY, ...args], {
+    cwd,
+    env: { ...process.env, ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => (stderr += chunk.toString('utf8')));
+
+  if (when === 'immediately') {
+    child.stdout?.destroy();
+  } else {
+    child.stdout?.once('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+      child.stdout?.destroy();
+    });
+  }
+
+  return new Promise<CliResult>((resolve) => {
+    child.on('close', (code, signal) => {
+      resolve({ code: signal === null ? (code ?? 1) : -1, stdout, stderr });
+    });
+  });
+}
