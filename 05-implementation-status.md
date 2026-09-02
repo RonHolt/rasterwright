@@ -7,15 +7,15 @@ Product scope lives in `03`, architecture in `04`, user-facing behaviour in
 
 ## Current state
 
-- HEAD: `aa1e6d2 docs: record the searched-down quality validation`. The last
-  implementation phase was `c39f2eb`, the packaging and agent-docs work;
+- HEAD: `bddf1f3 fix: only loosen a limit the rule is actually failing`. The
+  last implementation phase was `c39f2eb`, the packaging and agent-docs work;
   everything since is validation and the fixes it turned up.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
   (`--verbose`, `--json`), `fix --dry-run` (`--json`, `--allow-renames`), `fix`
   (`--allow-renames`, `--json`, `--no-git`, `--backup-dir`, `--no-review`,
   `--concurrency`), `review` (`--keep`, `--clean`, `--no-open`). Byte budgets
-  enforced. Baseline: 889 tests across 26 files, typecheck and build clean.
+  enforced. Baseline: 891 tests across 26 files, typecheck and build clean.
   Sharp pinned exactly at `0.35.4`. The vertical-slice loop (`04` section 11)
   is closed: check, fix, check clean, fix again writing nothing, before/after
   page; `init` closes the other end by generating a config where none exists.
@@ -86,11 +86,14 @@ queued. Decisions in `04` section 22 - see Human validation pending below.
 
 ## Recent decisions (not already in 04)
 
-- None beyond `04` sections 15-23. Section 23 is the searched-down quality
+- None beyond `04` sections 15-24. Section 23 is the searched-down quality
   validation: what the floor of 40 actually looks like, why a byte ceiling is a
   weak lever on flat-colour art, the planner/pipeline resize disagreement it
   exposed, and the failure message that printed a ceiling and the size that
-  missed it as the same number.
+  missed it as the same number. Section 24 is the `init` taste pass on
+  unfamiliar repositories: the roll-up that gave up at four top-level image
+  directories, and the closure loop that walked a ladder with no violations on
+  it.
 
 ## Known limitations
 
@@ -103,7 +106,12 @@ queued. Decisions in `04` section 22 - see Human validation pending below.
   out - intended, see `04` 21.2); a group under three images is left ungoverned
   (counted, named in a comment); and the generated config describes the
   repository, not an intention - ladder numbers, not direct measurement, but
-  equally authoritative-looking.
+  equally authoritative-looking. `MAX_RULES` is a preference, not a promise: a
+  repository with more than three top-level image directories gets one rule per
+  directory rather than the single broad rule the roll-up used to collapse to,
+  and only a corpus too thin to clear `MIN_GROUP` still collapses (`04` 24.1).
+  The width ladder's bottom rung is 640, so a directory of icons gets an inert
+  width limit (`04` 24.3).
 - Quality is a weak lever on flat-colour art: across the whole 40-82 band a
   logo and a flat vector illustration span a factor of 1.2 in bytes where a
   photograph spans 2.1. A byte ceiling on that kind of file either fits near
@@ -209,6 +217,26 @@ budget tiers (`04` section 23):
   failure printed the ceiling and the best attempt as the same number.
 - The overlay and 1:1 zoom modes on the review page do their job well.
 
+Done on 2026-09-02, third pass, `init` run read-only against repositories whose
+policy was never hand-written (`04` section 24):
+
+- Trials on a legacy client theme (`chinburg`, 651 images, four top-level image
+  directories) and an Astro static site (`portfolio`, 593 images, 30 MB source
+  photographs), plus a discovery-only sweep over 41 theme and site checkouts.
+- **Two defects found and fixed, both the 23.3 signature** - a generated number
+  contradicting its own provenance comment. The roll-up collapsed to one broad
+  `**` rule whenever more than three image directories sat at depth 1, putting
+  117-pixel icons and 6600-pixel photographs under one ceiling (4 of the 41
+  checkouts); and `bumpRule` fell through to a ladder with zero violations,
+  producing `maxWidth: 4000` on a corpus whose widest image is 2800.
+- **With both fixed the generated configs are worth keeping.** `chinburg` gets
+  four rules that each describe their group; `portfolio` gets a width limit its
+  own comment supports. The sweep produces no collapse anywhere and at most
+  four rules in any repository.
+- Still true, and confirmed rather than retired: a generated config describes
+  the repository, not an intention. `init` produces a file worth editing, not a
+  policy.
+
 Still open, in rough order:
 
 1. **Review page defaults.** Side by side scales `before` and `after` to their
@@ -217,12 +245,10 @@ Still open, in rough order:
    a fixed-height cell. Overlay fixes both and is one click away. Also still
    unseen: narrow widths (the CSS stacks the pair, never verified in a browser -
    Chrome refused the window resize) and whether 200 cards stay navigable.
-2. **`init` taste** in an unfamiliar repository. The ladders matched a
-   hand-written policy on the theme; that is one data point.
-3. **Messy real-world inputs**: camera JPEGs with orientation and EXIF,
+2. **Messy real-world inputs**: camera JPEGs with orientation and EXIF,
    Photoshop exports with ICC profiles, CMYK, 16-bit PNGs, animated WebP.
-4. **macOS and Windows**: case-insensitive path semantics, the two-step
+3. **macOS and Windows**: case-insensitive path semantics, the two-step
    case-only rename and its recovery, directory fsync tolerance, opener.
-5. **Does the skill change agent behaviour?** Install
+4. **Does the skill change agent behaviour?** Install
    `skills/rasterwright/SKILL.md` and compare an agent with and without it.
-6. **Publishing** is the human's call: `private: true`, 0.1.0, no remote.
+5. **Publishing** is the human's call: `private: true`, 0.1.0, no remote.

@@ -2241,3 +2241,124 @@ Two smaller notes from the same session:
 - Filtering to a card that has never been scrolled into view shows empty boxes
   for a moment before the lazy images load. It resolves itself; it looks broken
   while it lasts.
+
+---
+
+## 24. Decisions from judging `init` taste on unfamiliar repositories
+
+Section 21 built `init` and checked it against one corpus: the Bokka theme,
+whose hand-written policy it reproduced. That is a corpus the heuristic was
+tuned while looking at. This pass ran it read-only, through `runInit` (21.10),
+against repositories whose policy has never been written by hand - a legacy
+client theme (`chinburg`, 651 images) and an Astro static site (`portfolio`,
+593 images) - plus a discovery-only sweep over 41 theme and site checkouts to
+see how often each shape occurs.
+
+Both trials produced a config worth keeping only after two defects were fixed.
+Each defect had the same signature as the `resize.to` bug in 23.3: a generated
+number that contradicted the comment written directly above it.
+
+### 24.1 The roll-up gave up entirely at four top-level image directories
+
+`chinburg` holds `legacy/` (348 images), `images/` (242), `assets/` (38) and
+`233-vaughan/` (22). Four anchors, all at depth 1, against `MAX_RULES = 3`. The
+loop picked the deepest, found its parent was the project root, and returned
+one broad `**` rule for all 651 files.
+
+What that rule cost, measured per directory:
+
+| anchor | n | p90 width | maxWidth | p95 bytes | maxBytes |
+| ------ | - | --------- | -------- | --------- | -------- |
+| `legacy/` | 347 | 2000 | 2000 | 314 KB | 500kb |
+| `images/` | 242 | 6600 | 4000 (topped out) | 1.6 MB | 3mb |
+| `assets/` | 38 | 117 | 640 | 4.9 KB | 50kb |
+| `233-vaughan/` | 22 | 2000 | 2000 | 563 KB | 750kb |
+
+The collapsed rule was `maxWidth: 4000, maxBytes: 5mb`. Against `assets/`, whose
+widest file is 372 pixels, that ceiling is inert - an icon could grow 34x and
+stay legal. Against `images/`, it still flagged 122 files. One number described
+neither group, and the config looked authoritative while governing nothing.
+
+The fix reads step 5 the way it was actually justified. Its stated reason in
+21.2 is narrow and structural: don't produce a recursive root anchor that would
+contradict the non-recursive one from step 1. It was never an argument that one
+broad rule is a *better description* than four accurate ones. So **step 5
+becomes a stop rather than a surrender**: once every surviving anchor sits
+directly under the root, there is no parent to generalize into and the loop
+keeps what it has. The cap stays a preference generalization tries to honour,
+not a promise the anchors are bent to keep.
+
+One exception survives, and it is the case where the broad rule really is
+better. When step 3 had to waive `MIN_GROUP` to avoid dropping every anchor, the
+survivors hold one or two files each; rules derived from a single image are
+exactly what that minimum exists to prevent. `dropSmall` now reports that waiver
+so step 5 can tell the two situations apart.
+
+Bounded by a sweep of 41 checkouts: the change fires on 4 of them (`chinburg`,
+two `betheme` copies, `Divi`), no repository collapses any more, and the largest
+config produced anywhere is 4 rules. The cap is exceeded by exactly one, and
+only where a real fourth group exists.
+
+A side effect worth stating: `chinburg`'s root-level `screenshot.png` is now
+ungoverned, where the broad rule had covered it. That is 21.2 step 1 working as
+designed - a WordPress theme screenshot beside `style.css` is precisely the
+stray file that must not anchor a rule over the whole tree.
+
+### 24.2 The closure loop bumped a ladder that had no violations
+
+`portfolio` is 593 images under `public/img`, widest 2800, p90 width 1920, but
+41 files over 5 MB and one of 29 MB. `init` generated `maxWidth: 4000` directly
+beneath the comment `Widths up to 2800 (90th percentile 1920)`.
+
+The cause is in `bumpRule`. It orders the two ladders by which check has more
+violations and then **falls through to the second ladder unconditionally**. Here
+`bytesOver` was 41 and `widthOver` was 0, so bytes went first, topped out at
+`5mb` immediately, and the loop fell through to width - which it walked from
+2000 to 4000 across four steps, retiring nothing, because loosening a width
+ceiling cannot answer a byte finding.
+
+21.2 describes the fall-through in one direction only ("the byte branch is
+reached only when the width ladder has topped out"). The reverse direction was
+never reasoned about, and it is the harmful one: the byte ladder tops out on any
+corpus holding a handful of large photographs, so this fires easily, and it
+silently discards a width limit the heuristic had correctly derived. Any future
+3500-pixel image would sail through a limit that exists only as an artifact.
+
+The fix is a guard: **a ladder is eligible only when its own check is what the
+rule is failing.** `widthOver === 0` skips width, `bytesOver === 0` skips bytes.
+The tie-break and the intended fall-through are untouched - when both counts are
+non-zero, width still goes first and still hands off to bytes if it has topped
+out.
+
+The guard cannot stall the loop, which is the property that makes it safe.
+`verify` increments `overLimit` only when a width or a byte finding is present,
+so a rule over tolerance always has at least one eligible ladder. If that ladder
+has topped out, `bumpRule` returns false and the run stops with honest numbers
+and a summary saying how many files the config flags - which is what section 21
+wanted the unsatisfiable case to do all along.
+
+`portfolio` now generates `maxWidth: 3000`: the last rung the ladder climbed for
+a real width violation, and a number its own provenance comment supports.
+
+### 24.3 What the trials say about the config itself
+
+With both fixes in, `chinburg` produces four rules that each describe their
+group, and the one intractable group (`images/`, whose p90 width is 6600) tops
+out and honestly flags 122 files rather than pretending. That is the right
+outcome: those plan images genuinely need attention, and a heuristic has no
+standing to decide they don't.
+
+Two limitations observed and deliberately not fixed:
+
+- **The width ladder's bottom rung is 640**, so a directory of icons whose
+  widest file is 372 gets `maxWidth: 640`. The limit is inert. Tightening it
+  would mean guessing at intent from a corpus of sprites, and 21.2's ladder is
+  coarse on purpose.
+- **A generated config still describes the repository, not an intention.** Both
+  trials confirm the 21.2 caveat rather than retiring it. `init` gets the user
+  to a file worth editing; it does not get them to a policy.
+
+Cost, for the record: 5.6 s for 651 images on the theme, 103 s for 593 on the
+static site. The difference is decode time on 30 MB source photographs, not a
+regression - `init` inspects every image because coverage isn't known until all
+are seen (21.10).
