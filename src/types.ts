@@ -640,8 +640,14 @@ export interface FixResult {
    */
   applied: PlannedOperation['op'][];
   before: FixMeasurement;
-  /** Present only when a new file was written. */
-  after?: FixMeasurement;
+  /**
+   * Present only when a new file was written.
+   *
+   * `contentHash` is the sha256 of the bytes that were written. `review` records
+   * it so a page rendered later can tell an output it is describing from one
+   * something else has changed since.
+   */
+  after?: FixMeasurement & { contentHash: string };
   /**
    * What the encoder did, when this run encoded anything. Present on a failed
    * result too: what the search reached before giving up is the whole reason
@@ -650,6 +656,15 @@ export interface FixResult {
   encode?: EncodeOutcome;
   /** Bytes saved as a percentage of `before.bytes`. Negative when the file grew. */
   savingsPct?: number;
+  /**
+   * The copy of the original this run retained for `review`, as a path relative
+   * to `.rasterwright/review/` (`before/<sha256>.<ext>`).
+   *
+   * Present only on a `fixed` result, and only when the run was keeping review
+   * data. Reported on the result rather than collected through shared state, so
+   * a worker never has to write anywhere but its own return value.
+   */
+  beforeFile?: string;
   /** Why the file failed, was skipped or was blocked. Plain language. */
   reason?: string;
   warnings: string[];
@@ -718,5 +733,112 @@ export interface FixReport {
    * non-zero regardless of how every file fared.
    */
   unrecovered: string[];
+  /**
+   * True when this run appended itself to `.rasterwright/review/manifest.json`,
+   * so `rasterwright review` has something new to show.
+   *
+   * False under `--no-review`, and false for a run that wrote no file at all: a
+   * run that changed nothing has nothing to review, and recording it would prune
+   * away the run that *did* change something. See `04` section 20.
+   */
+  reviewRecorded: boolean;
   diagnostics: string[];
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Review
+ *
+ * What `fix` retains so `rasterwright review` can show the pixels afterwards:
+ * a copy of every original it overwrote, and a manifest describing the run.
+ *
+ * The manifest is the whole interface between the two commands. `review` reads
+ * it, stats the output files to notice anything that has changed since, and
+ * renders one static HTML page. It never re-encodes and never calls Sharp.
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * A reason one file is worth looking at.
+ *
+ * Computed by `review/classify.ts` at render time rather than stored, so
+ * the thresholds live in one pure function that can be changed without
+ * invalidating manifests written by an earlier version.
+ */
+export type ReviewFlag =
+  /** Execution or verification failed. The original is untouched. */
+  | 'failed'
+  /** Batch preflight refused the plan's output path. */
+  | 'blocked'
+  /** A plan exists and this run did not execute it. */
+  | 'skipped'
+  /** A byte ceiling the run could not reach, or an output still over one. */
+  | 'unmet-budget'
+  /** Transparency forced the decision, one way or the other. */
+  | 'transparency'
+  /** Error-level findings the write did not resolve. See the rename carve-out. */
+  | 'unresolved'
+  /** The file is at a different path than it started at. */
+  | 'renamed'
+  /** The output is larger than the input. */
+  | 'grew'
+  /** Quality was spent on a lossy re-encode that saved almost nothing. */
+  | 'barely-shrank'
+  /** A saving large enough to be worth confirming with your eyes. */
+  | 'shrank-suspiciously'
+  /** A large saving with no resize behind it, so it was all quality. */
+  | 'quality-only-drop'
+  /** The dimensions changed with no resize in the plan. Should be impossible. */
+  | 'dimensions-without-resize';
+
+/** One file, as one run left it. */
+export interface ReviewEntry {
+  /** Repo-relative, POSIX, as everywhere else. */
+  path: string;
+  /** Where the file ended up. Differs from `path` only on a rename. */
+  outputPath: string;
+  status: FixStatus;
+  /**
+   * The retained original, relative to `.rasterwright/review/`. Absent for
+   * anything that was not written, which has no original worth copying because
+   * the file on disk still *is* the original.
+   */
+  beforeFile?: string;
+  before: FixMeasurement;
+  /** Present only when a new file was written. Carries the hash of what was written. */
+  after?: FixMeasurement & { contentHash: string };
+  savingsPct?: number;
+  /** Operation names actually executed, in order. */
+  applied: PlannedOperation['op'][];
+  /** The plan, so the page can describe what was done in the plan's own terms. */
+  operations: PlannedOperation[];
+  /** What the encoder did, when this run encoded anything. */
+  encode?: EncodeOutcome;
+  reason?: string;
+  warnings: string[];
+  requiredPermissions: FixPermissionName[];
+}
+
+/** One `fix` run, as the manifest records it. */
+export interface ReviewRun {
+  /** `FixReport.runId`. */
+  runId: string;
+  /** ISO 8601, in UTC. */
+  finishedAt: string;
+  rasterwrightVersion: string;
+  engine: { sharp: string; vips: string };
+  permissions: FixPermissions;
+  /** True when the run stopped early on SIGINT and recorded what it completed. */
+  interrupted: boolean;
+  summary: FixSummary;
+  entries: ReviewEntry[];
+}
+
+/** `.rasterwright/review/manifest.json`. */
+export interface ReviewManifest {
+  version: 1;
+  /** How many runs to keep. At least 1; defaults to 1. Set by `review --keep`. */
+  retain: number;
+  /** Newest first. */
+  runs: ReviewRun[];
 }

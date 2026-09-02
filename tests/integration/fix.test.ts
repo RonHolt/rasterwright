@@ -904,11 +904,28 @@ describe('fix --json', () => {
 describe('fix leaves the git index alone', () => {
   it('stages nothing, even when it rewrites tracked files', async () => {
     const root = copyGitProject('maxheight');
-    await runCli(['fix'], root);
+    const result = await runCli(['fix'], root);
 
     const status = execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' });
     // A leading space in the first column is the point: the file is modified in
-    // the work tree and nothing has been staged.
+    // the work tree and nothing has been staged. `.rasterwright/` is untracked,
+    // which is exactly what the hint on stderr is about - and the hint is a
+    // suggestion, so `.gitignore` itself is still untouched.
+    expect(status).toBe(' M assets/tall.png\n?? .rasterwright/\n');
+    expect(result.stderr).toMatch(/add `\.rasterwright\/` to \.gitignore/);
+    expect(fs.existsSync(path.join(root, '.gitignore'))).toBe(false);
+  });
+
+  it('says nothing about .gitignore once the directory is ignored', async () => {
+    const root = copyProject('maxheight');
+    fs.writeFileSync(path.join(root, '.gitignore'), '.rasterwright/\n');
+    initGitRepo(root);
+
+    const result = await runCli(['fix'], root);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toMatch(/\.gitignore/);
+    const status = execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' });
     expect(status).toBe(' M assets/tall.png\n');
   });
 });

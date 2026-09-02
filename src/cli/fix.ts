@@ -17,6 +17,7 @@ export interface FixCommandOptions {
   concurrency?: number;
   noGit?: boolean;
   backupDir?: string;
+  noReview?: boolean;
 }
 
 /**
@@ -66,6 +67,7 @@ async function runFixCommand(options: FixCommandOptions, streams: Streams): Prom
   const { report, diagnostics } = await runFix(config, version, {
     ...shared,
     noGit: options.noGit === true,
+    noReview: options.noReview === true,
     ...(options.backupDir === undefined ? {} : { backupDir: options.backupDir }),
   });
 

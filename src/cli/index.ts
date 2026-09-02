@@ -3,6 +3,7 @@ import { Command } from 'commander';
 
 import { checkCommand } from './check.js';
 import { fixCommand } from './fix.js';
+import { reviewCommand } from './review.js';
 import { readVersion } from './version.js';
 import { EXIT_CLEAN, EXIT_ERROR, RasterwrightError } from '../utils/errors.js';
 
@@ -15,15 +16,23 @@ const program = new Command();
  * and `4bananas` as 4. Silently rounding a value the user typed on purpose is
  * how a flag comes to mean something other than what it says.
  */
-function parseConcurrency(value: string): number {
+function positiveInteger(flag: string, value: string): number {
   if (!/^[0-9]+$/.test(value.trim())) {
-    throw new RasterwrightError(`--concurrency: expected a positive integer, got ${value}`);
+    throw new RasterwrightError(`${flag}: expected a positive integer, got ${value}`);
   }
   const parsed = Number(value.trim());
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new RasterwrightError(`--concurrency: expected a positive integer, got ${value}`);
+    throw new RasterwrightError(`${flag}: expected a positive integer, got ${value}`);
   }
   return parsed;
+}
+
+function parseConcurrency(value: string): number {
+  return positiveInteger('--concurrency', value);
+}
+
+function parseKeep(value: string): number {
+  return positiveInteger('--keep', value);
 }
 
 const streams = {
@@ -73,6 +82,7 @@ program
   .option('--no-gitignore', 'do not skip git-ignored files')
   .option('--no-git', 'run outside a git repository, accepting that overwrites cannot be undone')
   .option('--backup-dir <path>', 'copy every original into this directory before overwriting it')
+  .option('--no-review', 'do not keep before-copies or record this run for `rasterwright review`')
   .option('--concurrency <n>', 'number of images to process in parallel', parseConcurrency)
   .action(async (options: {
     config?: string;
@@ -81,20 +91,38 @@ program
     json?: boolean;
     gitignore?: boolean;
     git?: boolean;
+    review?: boolean;
     backupDir?: string;
     concurrency?: number;
   }) => {
     // Commander turns `--no-git` into `git: false`, so the flag is read here
     // and passed on under the name the rest of the code uses for it.
     process.exitCode = await fixCommand(
-      { cwd: process.cwd(), ...options, noGit: options.git === false },
+      {
+        cwd: process.cwd(),
+        ...options,
+        noGit: options.git === false,
+        noReview: options.review === false,
+      },
       streams,
     );
   });
 
-// `review` and `init` are deliberately absent. `check` and `fix --dry-run`
-// still write nothing at all; only plain `fix` writes, and only after its
-// preconditions have passed.
+program
+  .command('review')
+  .description('Open a local before/after page for what the last fix run changed.')
+  .allowExcessArguments(false)
+  .option('-c, --config <path>', 'path to .rasterwright.yml (default: nearest one, searching upwards)')
+  .option('--keep <n>', 'retain this many runs from now on, and prune to it', parseKeep)
+  .option('--clean', 'delete .rasterwright/review/ and its retained originals')
+  .option('--no-open', 'print the path to the page instead of opening a browser')
+  .action(async (options: { config?: string; keep?: number; clean?: boolean; open?: boolean }) => {
+    process.exitCode = await reviewCommand({ cwd: process.cwd(), ...options }, streams);
+  });
+
+// `init` is deliberately absent. `check` and `fix --dry-run` still write nothing
+// at all; only plain `fix` writes, and only after its preconditions have passed.
+// `review` writes its own page and nothing else in the project.
 
 /**
  * Commander's own failures exit through Rasterwright's codes, not its default.

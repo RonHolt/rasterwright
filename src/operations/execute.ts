@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import { backupOriginal } from './backup.js';
 import { commitRename, convertAndReplace, writeCandidate, type TempRegistry } from './atomic.js';
 import { renderCandidate, type RenderedCandidate } from './pipeline.js';
+import { retainOriginal } from '../review/store.js';
 import { EXTENSION_FORMATS } from '../policy/rules/extension.js';
 import { hasMeaningfulAlpha } from '../policy/rules/types.js';
 import { evaluate } from '../policy/evaluate.js';
@@ -61,6 +62,14 @@ export interface ExecuteContext {
   stop: StopFlag;
   /** Absolute, already validated. Undefined unless `--backup-dir` was given. */
   backupDir: string | undefined;
+  /**
+   * Absolute path to `.rasterwright/review/`, already validated. Undefined under
+   * `--no-review`, which is the only way to run without keeping before-copies.
+   *
+   * Resolved once by `runFix` rather than derived per file, so every worker
+   * writes into one directory that one check has already approved.
+   */
+  reviewDir: string | undefined;
   /** Injection point for tests. Production always uses the real pipeline. */
   render?: typeof renderCandidate;
 }
@@ -297,8 +306,11 @@ async function executePlanned(
   //    through the old plan would apply a resize computed for a different image
   //    and, worse, overwrite an edit somebody made while the run was in flight.
   //    Cheap to detect, because `check` already hashed what it read.
+  // Hashed once. Three things need it: the plan-drift check below, the
+  // "nothing actually changed" test at step 8, and the name of the before-copy.
+  const sourceHash = sha256(source);
   const planned = before?.image?.contentHash;
-  if (planned !== undefined && planned !== sha256(source)) {
+  if (planned !== undefined && planned !== sourceHash) {
     return outcome(
       plan,
       'failed',
@@ -353,7 +365,7 @@ async function executePlanned(
   //    which are still in violation must be reported as a failure, not as a
   //    success that happened to need no write.
   const unchangedInPlace =
-    plan.targetPath === plan.path && inspected.info.contentHash === sha256(source);
+    plan.targetPath === plan.path && inspected.info.contentHash === sourceHash;
   if (unchangedInPlace) return report('unchanged');
 
   // 9. Everything below writes.
@@ -365,11 +377,31 @@ async function executePlanned(
     }
   }
 
-  // BEFORE-COPY CALL SITE (04 section 17.7). `review` keeps a copy of every
-  // original it touched; the bytes are already in `source`, so retaining one is
-  // a single insertion here. Deliberately not implemented in this phase: a
-  // second write surface brings its own partial states, and this phase's claim
-  // is that nothing partial is ever left on disk.
+  // 10. The before-copy `review` shows (04 sections 9 and 20). It sits here for
+  //     the same reason the backup does: after verification, so a file that
+  //     failed is never copied, and before the write, so no original is
+  //     overwritten without its copy already on disk.
+  //
+  //     A copy that cannot be written fails this file and leaves the original
+  //     exactly as it was, matching `--backup-dir` one line above. Inside a
+  //     repository git covers tracked, clean files - but `fix` warns per file
+  //     precisely because untracked, ignored and modified ones have no stored
+  //     copy at all, and for those this is the only pixel-level record of what
+  //     the original looked like. `--no-review` is the way to run without one.
+  let beforeFile: string | undefined;
+  if (ctx.reviewDir !== undefined) {
+    try {
+      beforeFile = await retainOriginal(
+        ctx.reviewDir,
+        plan.path,
+        source,
+        sourceHash,
+        measured.format,
+      );
+    } catch (error) {
+      return report('failed', messageOf(error));
+    }
+  }
 
   try {
     if (encode === undefined) {
@@ -383,16 +415,18 @@ async function executePlanned(
     return report('failed', messageOf(error));
   }
 
-  const after: FixMeasurement = {
+  const after: FixMeasurement & { contentHash: string } = {
     bytes: inspected.info.bytes,
     width: inspected.info.width,
     height: inspected.info.height,
     format: inspected.info.format,
+    contentHash: inspected.info.contentHash,
   };
 
   const result = report('fixed');
   result.applied = plan.operations.map((operation) => operation.op);
   result.after = after;
+  if (beforeFile !== undefined) result.beforeFile = beforeFile;
   result.savingsPct =
     measured.bytes === 0 ? 0 : ((measured.bytes - after.bytes) / measured.bytes) * 100;
   result.warnings = verification.tolerated.map((finding) => finding.message);

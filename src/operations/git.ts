@@ -242,6 +242,33 @@ function detectToplevel(root: string): ToplevelResult {
   return { state: 'in-repo', path: path.resolve(toplevel), reason: undefined };
 }
 
+/**
+ * Whether git ignores `relativePath`, or `undefined` when it could not say.
+ *
+ * `check-ignore -q` answers in its exit status: `0` ignored, `1` not ignored,
+ * anything else a failure - outside a repository, git missing, an unreadable
+ * `.gitignore`. Those all come back as `undefined` rather than as `false`,
+ * because "git has no opinion" and "git says no" lead callers to different
+ * places, and only one of them is a fact.
+ *
+ * Read-only. Nothing about `check-ignore` touches the index or the work tree.
+ */
+export function isIgnored(root: string, relativePath: string): boolean | undefined {
+  // No `--literal-pathspecs` here, unlike everywhere else in this module:
+  // `check-ignore` rejects pathspec magic outright and exits 128. The only
+  // caller passes a fixed literal with no glob characters in it, so nothing is
+  // lost - but a caller that ever passes a real filename must quote it itself.
+  const result = spawnSync('git', ['-C', root, 'check-ignore', '-q', '--', relativePath], {
+    encoding: 'buffer',
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+  });
+
+  if (result.error !== undefined) return undefined;
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  return undefined;
+}
+
 interface GitResult {
   stdout: string;
   /** A description of what went wrong, or undefined on success. */

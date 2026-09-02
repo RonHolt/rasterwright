@@ -1547,3 +1547,191 @@ Three consequences worth stating:
 - **The dry run names the glob.** When the ceiling comes from somewhere other
   than the rule the user is looking at, the plan says which glob supplied it.
   A number with no provenance reads as a bug.
+
+---
+
+## 20. Decisions from implementing `review`
+
+Added 2026-09-01, after section 19. This phase closed the vertical-slice loop
+from section 11: `fix` now retains a copy of every original it overwrites, and
+`rasterwright review` turns those copies into a static before/after page.
+`check` and `fix --dry-run` are unchanged and still create no `.rasterwright/`.
+
+**1. A failed before-copy fails the file.** The copy sits immediately after
+verification and immediately before the atomic write, one line below the
+`--backup-dir` copy, and it is refused the same way: the file is failed, the
+original is left byte-for-byte untouched, and the batch continues. The
+precedent is the right one. Inside a repository git covers tracked, clean
+files - but `fix` warns per file precisely because untracked, ignored and
+modified files have no stored copy at all, and for those the before-copy is the
+only pixel-level record of what the original looked like. Overwriting an image
+while silently failing to keep the copy the user would judge the result by
+inverts the tool's whole posture.
+
+Two things make that livable rather than annoying. All three levels of the path
+are validated once up front - `.rasterwright`, `.rasterwright/review` and
+`before/` must each be absent or a real directory - so a tree that can never hold
+review data refuses before anything is written rather than failing every file in
+turn. And `--no-review` exists: one flag, explicit in the shell history, and the
+run proceeds keeping nothing.
+
+The check uses `lstat`, so a symlink is refused even when it points at a real
+directory: Rasterwright writes copies here and later deletes unreferenced ones,
+and a link makes both happen somewhere the path does not name. A *dangling*
+symlink matters twice over, because `stat` reports it as absent and `mkdir` then
+fails `EEXIST` - the run would fail every file with an errno instead of one
+sentence naming the link. `review --clean` uses `lstat` for the same reason: it
+reports honestly that it removed a link rather than claiming there was nothing
+there.
+
+**2. The manifest is written once, at the end.** Not per file. Entries are
+collected in memory as `FixResult.beforeFile` and folded into one run record
+after the worker pool has drained, which puts a single small write at the end of
+a run instead of N concurrent read-modify-writes over one JSON file. An
+interrupted run still reaches it: the stop flag makes every remaining worker
+return `skipped`, the pool drains normally, and the run records what it
+completed with `interrupted: true`. Only a second SIGINT, which exits from the
+signal handler, skips the write - and that run's before-copies are hash-named
+and unreferenced, so the next prune collects them.
+
+Concurrency across runs is a read-merge-write window of microseconds in which
+two simultaneous `fix` runs over one project could lose one run's entry. A lock
+file would close it and is not worth the machinery. Documented, not pretended
+away.
+
+**3. A run that wrote nothing records nothing.** Deliberately *not* "a run with
+no results". A second, idempotent `fix` over `fixtures/projects/mixed` still
+reports `icons/logo.png` as skipped, and recording that as a run would prune
+away the run that actually changed something and garbage-collect its
+before-copies. So the test is whether the run *wrote*: at least one `fixed`
+result. That keeps two guarantees true at once - a second run leaves
+`.rasterwright/` byte-identical, and the page always describes the run that
+produced the files currently in the working tree.
+
+The exceptions of a run that did write are recorded alongside its written files,
+with no before-copy, because the file on disk still *is* the original. They are
+what the "needs attention" section is mostly made of.
+
+**4. The manifest is written before anything is collected.** Both in `fix` and
+in `review --keep`. Collecting first and then failing the write would leave a
+manifest referring to before-copies that no longer exist, which turns a
+recoverable bookkeeping failure into a page with missing images. In this order
+the worst case is a copy nothing refers to, and the next prune removes it.
+
+**5. Garbage collection removes only what it can prove is its own.** Two rules.
+A candidate name must match `^[0-9a-f]{64}\.(jpe?g|png|webp)$`, so a `notes.txt`
+or a subdirectory a human put in `before/` is never a candidate at all. And it
+must be referenced by no retained run. An unlink that fails is a diagnostic, not
+an error: the copy is disposable by definition. Collection runs when a run is
+recorded and when the user asks via `review --keep`, and never on a `fix` that
+wrote nothing.
+
+**6. Retention is persisted, not per invocation.** `retain` lives in the
+manifest and defaults to one run. `review --keep <n>` sets it, prunes to it and
+rewrites. If `--keep` were a flag on `review` alone, the next `fix` would prune
+straight back to one and `--keep 5` could never actually show five runs.
+
+**7. Stale outputs are a note, never a broken image.** Each written entry
+records the sha256 of the bytes the run wrote (`FixResult.after.contentHash`,
+already in hand from the candidate inspection). At render time `review` stats
+and hashes each output and says which of three things is true: it is what the
+run produced, it has changed since, or it is gone. A page opened days later over
+a working tree that has moved on then explains itself instead of showing a later
+edit as though Rasterwright had produced it.
+
+**8. Exception thresholds.** Computed by `review/classify.ts`, a pure function,
+so they can change without invalidating manifests written by an earlier version.
+
+| Flag | Condition |
+|---|---|
+| `failed` / `blocked` / `skipped` | the result status |
+| `unresolved` | the write left error-level findings outstanding (the rename-only carve-out, 18.1) |
+| `unmet-budget` | a refusal under an encode carrying `maxBytes`, or an output over one |
+| `transparency` | a *refusal* whose reason names transparency |
+| `renamed` | `outputPath !== path` |
+| `grew` | savings below zero |
+| `barely-shrank` | savings under 2% on a `lossyReencode` |
+| `shrank-suspiciously` | savings over 95% |
+| `quality-only-drop` | savings over 70% with no `resize` applied |
+| `dimensions-without-resize` | the dimensions moved with no `resize` or `autoOrient` applied |
+
+Two flags the scouting design proposed were dropped. `alpha-lost` is
+unreachable: `verifyCandidate` already fails any encode required to preserve
+transparency that did not, so a written file can never have lost it. And
+`transparency` on every alpha-preserving *success* was noise - a WebP that kept
+its alpha made no judgement call worth reviewing, which is the thing 03 asks the
+section to surface.
+
+**9. Needs attention holds the cards; all changes holds the rest.** Section 9
+described both sections listing every image, which means a flagged written file
+appears twice on one page. Instead the exceptions section renders the full card
+for every flagged entry, and "all changes" renders the full card for every
+written file that is not already above, with one line saying how many are. Every
+file appears exactly once, and the exceptions are still first.
+
+**10. `fix` hints about `.gitignore` and never edits it.** Once per recorded run,
+`git check-ignore -q .rasterwright/`. Exit 1 means not ignored and is the only
+case worth a word; exit 0, exit 128, and a git that cannot be run all mean say
+nothing, which is the rule `operations/git.ts` already follows. Writing to a
+file the user version-controls as a side effect of an image fix would turn up
+unexplained in their next `git diff`. `init` still writes that line, on purpose.
+
+Note that `check-ignore` rejects `--literal-pathspecs` outright and exits 128,
+unlike every other git invocation in that module. The one caller passes a fixed
+literal with no glob characters, so nothing is lost.
+
+**11. `review` has no exit 1.** Zero when the page was rendered and zero when
+there was nothing to render; two for a configuration or runtime failure. It is
+not a gate - it reports what a previous run did, and that run already had its
+say about the exit code. A project where `fix` has never run is not a project
+with a problem, so "nothing to review" is a message on stderr and a clean exit.
+
+`review --clean` removes `.rasterwright/review/` and never `.rasterwright/`
+itself, which is Rasterwright's namespace in the project and may hold other
+things later.
+
+**12. The page is rendered on the server, escaped once.** No JSON blob, no
+client-side templating: every card is static, escaped HTML written at generation
+time. The page then works with JavaScript disabled and there is one escaping
+path to audit rather than two. Paths go through `encodeURIComponent` per segment
+*and* HTML escaping; both are required and they are different operations. The
+script is about seventy lines and does four things: an exceptions-only filter, a
+path filter, a per-card overlay slider, and click-to-zoom in a `<dialog>`.
+
+**13. `review --json` is not implemented.** The manifest is already the
+machine-readable artifact, it is stable JSON at a known path, and a second
+serialization of it that drifts is worse than no serialization at all. `fix
+--json` already reports `beforeFile` and `reviewRecorded` for anything that
+wants to find it.
+
+**14. `--clean` and `--keep` together are refused.** Retention says what to keep
+from now on; `--clean` keeps nothing at all. Letting one silently win would make
+the command's effect depend on an argument order nobody wrote down.
+
+**15. The two panes share one scale, so a resize is visible as one.** Both boxes
+are the same size on screen, so `object-fit: contain` alone draws a 300px output
+exactly as large as the 700px original it came from - and the operation most
+worth seeing becomes invisible. Each image is instead sized as its fraction of
+the larger of the two, in percentages because the box width is a grid column
+only the browser knows. Overlay mode puts both back to 100%: there the images are
+being aligned pixel for pixel, not compared for size, and the zoom dialog shows
+each at its natural size regardless.
+
+The checkerboard follows the same principle of not saying false things: it is
+drawn only behind a PNG or a WebP. `FixMeasurement` carries no alpha flag, so
+format is the honest signal available, and behind a JPEG the checkerboard was
+decoration implying a transparency that cannot exist.
+
+**16. The overlay's clipped layer takes no pointer events.** At a full reveal the
+before layer covers the after pane completely and the after image cannot be
+clicked at all. The clipped layer is `pointer-events: none`, so a click in
+overlay mode always reaches the after pane, and two explicit "Zoom before" /
+"Zoom after" buttons in the reveal row give each pane a route of its own. The
+images stay focusable throughout, so the keyboard route never depended on any of
+this.
+
+**17. The zoom dialog titles the pane it is showing.** The card carries
+`data-before-name` and `data-after-name` as separate attributes rather than one
+space-joined string: the after pane of a renamed file lives at a different path,
+and a path can contain a space, which makes splitting a joined attribute back
+apart wrong in two independent ways.

@@ -12,7 +12,8 @@ not a replacement for your build system's asset pipeline.
 
 ## Status
 
-**Early, personal, open-source. `check`, `fix --dry-run` and `fix` work today.**
+**Early, personal, open-source. `check`, `fix --dry-run`, `fix` and `review`
+work today.**
 
 This is a tool built because its author wanted to use it. It is not a product,
 there is nothing to buy, and it makes no network calls, collects no telemetry
@@ -25,7 +26,7 @@ What exists right now:
 | `rasterwright check` | Implemented, read-only |
 | `rasterwright fix --dry-run` | Implemented, read-only. Reports the plan it would execute. |
 | `rasterwright fix` | Implemented, byte budgets included. |
-| `rasterwright review` | Not implemented |
+| `rasterwright review` | Implemented. A local before/after page for the last run. |
 | `rasterwright init` | Not implemented |
 
 `check` and `fix --dry-run` write nothing at all. Their read-only guarantee is
@@ -40,6 +41,12 @@ generated in memory and evaluated against policy. A file over its `maxBytes` is
 brought under it by searching quality downward, and a ceiling the policy's own
 quality floor cannot reach is an explicit failure that names the best size
 achieved and what to do about it - never a quietly degraded file.
+
+`fix` also keeps a copy of every original it overwrites, under
+`.rasterwright/review/`, and `rasterwright review` renders those copies and the
+current files into one static HTML page you open in a browser. Seeing the pixels
+is the point: a tool that reports "saved 61%" across 130 images has not told you
+whether any of them still look right.
 
 ## Install (development)
 
@@ -1081,6 +1088,124 @@ interim name that this run could not put back, and it is never deleted.
 | `blocked` | Batch preflight refused the plan's output path. |
 | `failed` | Execution or verification failed, or the image could not be decoded. **The original is untouched.** |
 
+## `rasterwright review`
+
+Numbers do not tell you whether an image still looks right. `review` builds one
+static HTML page from what the last `fix` run did and opens it in your browser.
+
+```
+$ rasterwright review
+/home/you/project/.rasterwright/review/index.html
+
+7 files across 1 retained run, 3 needing attention.
+469 KB of retained originals. Delete them with `rasterwright review --clean` when you are done looking.
+```
+
+The page has three parts.
+
+1. **A header** for each retained run: when it finished, how many files were
+   fixed, skipped, blocked and failed, the bytes before and after, and the
+   Rasterwright, Sharp and libvips versions that produced them.
+2. **Needs attention, first.** Every file with something worth looking at, most
+   urgent first. When there is nothing, it says so explicitly, which is itself
+   the useful answer.
+3. **All changes.** A card per written file that is not already above, with the
+   before and after side by side, the dimensions, bytes, format and savings, and
+   the ordered list of operations with the quality the encoder actually chose.
+
+The two images in a card share one scale, so a file resized from 2000px to
+1200px is drawn visibly smaller than the original beside it rather than blown
+back up to fill an identical box. A PNG or a WebP sits over a checkerboard, so
+transparency is visible rather than guessed at; a JPEG does not, because it
+cannot hold any.
+
+Click either image to zoom to natural pixels. The slider on a card overlays the
+two so they line up exactly, at one scale, with a button for each pane so both
+stay reachable at a full reveal. A checkbox hides everything but the exceptions,
+and a filter box narrows by path; `/` jumps to it. All of that is a hundred
+lines of vanilla JavaScript over markup that is already complete without it: the
+page works with scripting disabled, makes no network requests, embeds no data
+URIs, and loads nothing from a CDN.
+
+### What counts as needing attention
+
+| Flag | What it means |
+|---|---|
+| `failed` | Execution or verification failed. The original is untouched. |
+| `blocked` | Batch preflight refused the output path. |
+| `skipped` | A plan exists and the run did not execute it. |
+| `unmet-budget` | A `maxBytes` ceiling the run could not reach. |
+| `transparency` | Transparency is why Rasterwright refused. |
+| `unresolved` | The write left an error-level finding outstanding. |
+| `renamed` | The file is at a different path than it started at. |
+| `grew` | The output is larger than the input. |
+| `barely-shrank` | A lossy re-encode that saved under 2%: quality spent for nothing. |
+| `shrank-suspiciously` | Over 95% smaller. Worth confirming with your eyes. |
+| `quality-only-drop` | Over 70% smaller with no resize behind it. |
+| `dimensions-without-resize` | The dimensions moved with no resize planned. |
+
+### Where the before images come from
+
+`fix` copies each original into `.rasterwright/review/before/<sha256>.<ext>`
+immediately before it overwrites it - after the candidate has been verified, so
+a file that failed is never copied. Content-hash naming means an unchanged file
+is never copied twice and two runs cannot collide over a name.
+
+Before any of that, `fix` checks that `.rasterwright`, `.rasterwright/review`
+and `before/` are each either absent or a real directory, and refuses the whole
+run with exit `2` if one of them is a file or a symlink. Refusing once, having
+written nothing, beats failing image after image with the same errno.
+
+A copy that cannot be written **fails that file**, and the original is left
+exactly as it was. That is the same refusal `--backup-dir` makes one line above
+it, and for the same reason: inside a repository git covers tracked, clean
+files, but `fix` warns per file precisely because untracked, ignored and
+modified ones have no stored copy at all. For those the before-copy is the only
+record of what the original looked like.
+
+`fix --no-review` turns the whole mechanism off: no copies, no manifest, no
+`.rasterwright/` directory. Use it on a tree that genuinely cannot hold one.
+
+### Retention
+
+One run is kept by default. `review --keep <n>` raises that and **persists it**
+in the manifest, so the next `fix` keeps `n` runs rather than pruning straight
+back to one. Copies no retained run refers to are deleted, and only names
+matching `<64 hex>.<jpg|jpeg|png|webp>` are ever candidates - anything else you
+put in that directory is left strictly alone.
+
+`review --clean` deletes `.rasterwright/review/` outright, retained originals
+included. It never touches `.rasterwright/` itself, and it refuses to run
+alongside `--keep`, which asks for the opposite thing.
+
+A second, idempotent `fix` records nothing and leaves the directory
+byte-identical. The test is whether the run actually *wrote* a file, not whether
+it had anything to report: a project with a permanently unfixable file reports
+that file on every run, and recording those would prune away the run that
+changed something.
+
+### A page that has gone stale
+
+Each written entry records the hash of the bytes the run produced, so a page
+rendered days later can tell you which of three things is true about a file: it
+is what the run produced, it has changed since, or it is gone. You get a note on
+the card saying which, rather than a later edit presented as Rasterwright's work.
+
+### `.rasterwright/` and git
+
+After a run that recorded something, `fix` asks git whether `.rasterwright/` is
+ignored. If it is not, you get one line on stderr suggesting you add it. That is
+all it does: **`fix` never edits your `.gitignore`.** Editing a file you keep
+under version control, as a side effect of an image fix, would turn up
+unexplained in your next `git diff`. `init` will write that line, because
+generating the config is what you asked it to do.
+
+`review` exits `0` when it renders a page and `0` when there is nothing to
+render, because a project where `fix` has never run is not a project with a
+problem. It exits `2` on a configuration or runtime failure, and there is no
+exit `1`: it reports what an earlier run did, and that run already had its say
+about the exit code.
+
 ## Exit codes
 
 One model, every command. Warnings never produce a non-zero exit.
@@ -1090,6 +1215,9 @@ One model, every command. Warnings never produce a non-zero exit.
 | `0` | No error-level findings. | Every error is covered by a plan this run could execute (or there are none). | Nothing needs attention, and the run was not interrupted. |
 | `1` | At least one error. | At least one file is left unresolved: waiting on permission, blocked by a path conflict, unfixable, or unsupported. | A file failed, was skipped or was blocked; an image is stranded under an interim name; or the run was interrupted. |
 | `2` | Configuration or runtime error. Nothing was checked. | Same. | Same, plus a refused precondition: outside a git repository without `--no-git`, or an unusable `--backup-dir`. Nothing was written. |
+
+`rasterwright review` is not in that table on purpose: it never exits `1`. See
+its section above.
 
 An interrupted run exits `1`, not `130`. Three codes with one meaning each is
 worth more than agreeing with the shell convention for a signal. A usage error -
@@ -1140,7 +1268,15 @@ rasterwright fix [options]
   --no-gitignore       do not skip git-ignored files
   --no-git             run outside a git repository, accepting that overwrites cannot be undone
   --backup-dir <path>  copy every original into this directory before overwriting it
+  --no-review          do not keep before-copies or record the run for `review`
   --concurrency <n>    number of images to process in parallel
+
+rasterwright review [options]
+
+  -c, --config <path>  path to .rasterwright.yml (default: nearest one, searching upwards)
+  --keep <n>           retain this many runs from now on, and prune to it
+  --clean              delete .rasterwright/review/ and its retained originals
+  --no-open            print the path to the page instead of opening a browser
 ```
 
 Reach for `--dry-run` first. It is the same planning pass, printed instead of
@@ -1162,10 +1298,16 @@ Clearly labelled as **not built**:
   and both would make the output dimensions or the output path depend on
   encoding results, which `fix --dry-run` promises they never do. The failure
   message names them as manual remedies instead.
-- `rasterwright review` - a local static HTML before/after page. It is also
-  where before-copies land; `fix` marks the call site and keeps none today.
 - `rasterwright init` - a starter config generated from what a repo already
-  contains.
+  contains. It is the one command that will write the `.rasterwright/` line into
+  your `.gitignore`; `fix` only ever suggests it.
+- **A contact sheet for agent vision.** One labelled before/after PNG a model
+  can look at, rather than a page a person opens. Cheap to add and worth adding
+  if agents start reviewing runs. See `04-v0-technical-plan.md` section 12.
+- **`review --from HEAD`.** Comparing against git's stored copy instead of
+  against a retained one. Useful, and not a replacement for the copies: it
+  cannot answer for an untracked file, a staged-but-uncommitted state, or a
+  project outside a repository.
 
 Deferred, with the reasoning recorded in `04-v0-technical-plan.md` section 14:
 a `preferredFormat` distinct from a hard `format` requirement, a `--strict`
@@ -1194,9 +1336,11 @@ src/
   scanner/     file discovery and Sharp-based inspection
   policy/      pure functions: ImageInfo + rule -> findings
   operations/  planning (pure), plus the pipeline, atomic writer and executor
+  review/      the before-copy store, the manifest, the page, the browser opener
   utils/       byte parsing, hashing, ICC reading, paths, concurrency, signals
-  run-check.ts the read-only check pipeline
-  run-fix.ts   check's pipeline, plus planning (read-only) and execution
+  run-check.ts   the read-only check pipeline
+  run-fix.ts     check's pipeline, plus planning (read-only) and execution
+  run-review.ts  the manifest, staleness detection and the rendered page
 ```
 
 The architecture is `policy -> analysis -> operation plan -> execution ->
@@ -1208,8 +1352,10 @@ guarantees provable rather than merely intended:
   and touches no filesystem, which is what makes plans deterministic and
   testable without a single image file.
 - `operations/pipeline.ts` is bytes in, bytes out. No filesystem, no policy.
-- `operations/atomic.ts` is the only module that writes, and nothing in it knows
-  what an image is.
+- `operations/atomic.ts` is the only module that writes image bytes, and nothing
+  in it knows what an image is.
+- `review/html.ts` and `review/classify.ts` are pure functions from a manifest to
+  a string, so what the page says is testable without a browser or a filesystem.
 - `check` and `fix --dry-run` import nothing that writes, which is what makes
   both read-only by construction rather than by discipline.
 

@@ -7,15 +7,18 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `7460214 feat: enforce image byte budgets`
-  plus uncommitted work implementing byte-budget execution.
+- HEAD: `21f0b5a docs: record byte-budget phase as complete in implementation
+  status`, plus uncommitted work implementing `review`.
 - Implemented commands: `check` (`--verbose`, `--json`), `fix --dry-run`
-  (`--json`, `--allow-renames`), and `fix` (`--allow-renames`, `--json`,
-  `--no-git`, `--backup-dir`, `--concurrency`). Byte budgets are enforced.
-- Not implemented: `review`, `init`.
-- Baseline: 618 tests across 19 files, `npm run typecheck` clean,
+  (`--json`, `--allow-renames`), `fix` (`--allow-renames`, `--json`,
+  `--no-git`, `--backup-dir`, `--no-review`, `--concurrency`), and `review`
+  (`--keep`, `--clean`, `--no-open`). Byte budgets are enforced.
+- Not implemented: `init`.
+- Baseline: 703 tests across 22 files, `npm run typecheck` clean,
   `npm run build` clean.
 - Sharp pinned exactly at `0.35.4`.
+- The vertical-slice loop from `04` section 11 is closed: check, fix, check
+  again clean, fix again writing nothing, and a before/after page.
 
 ## Completed phases
 
@@ -27,15 +30,16 @@ behaviour in `README.md`; this file only records where the implementation is.
 | Batch plan preflight (`blocked` status, collisions fixture) | `7974008` |
 | Execution foundation, unwired (phase 2a) | `3c3076e` |
 | Execution wired (phase 2b) | `9e7195f` |
-| Byte-budget execution | `7460214` |
-| Byte-budget execution | uncommitted |
+| Byte-budget execution | `7460214`, `21f0b5a` |
+| `review` (before-copies, manifest, static page) | uncommitted |
 
 ## Current phase
 
-**`rasterwright review`.** Before-copies taken by `fix` at the marked
-call site, manifest under `.rasterwright/review/`, static HTML page with
-exceptions first, retention (last run, `--keep`, `--clean`), `--no-open`,
-`--no-review` on `fix`. Status: not started.
+**`rasterwright init`.** A starter `.rasterwright.yml` generated from what a
+repo already contains: one scan, a handful of conservative heuristics, no
+interactive prompts, `--bare` for a plain commented template, and the
+`.rasterwright/` line written into `.gitignore` (the one command permitted to
+touch it). Status: not started. See `03` section 3 and `04` section 9.
 
 ## Non-negotiable invariants
 
@@ -53,7 +57,8 @@ exceptions first, retention (last run, `--keep`, `--clean`), `--no-open`,
   degraded output. No best-effort PNG, no palette quantization, no flatten
   without explicit policy.
 - Failure is per file. A file either fully succeeds or is left exactly as it
-  was, so there is no partial state and no rollback machinery.
+  was, so there is no partial state and no rollback machinery. That includes a
+  before-copy that cannot be written: the file fails and the original stands.
 - Preflight refuses conservatively: it never picks a winner between two plans
   claiming one path, and never orders renames so a chain can thread itself.
 - Any filename change requires `--allow-renames` per run. Not a config key.
@@ -62,10 +67,14 @@ exceptions first, retention (last run, `--keep`, `--clean`), `--no-open`,
 - Metadata (EXIF/XMP/IPTC/text) is a warning, stripped only during a rewrite
   an error already required. ICC is colour management, not metadata.
 - `kb` = 1024 bytes. Rules shallow-merge, later matching rule wins per key.
+- A second, idempotent `fix` leaves `.rasterwright/` byte-identical and adds no
+  before-copy. A run records itself only when it actually wrote a file.
+- Rasterwright never edits `.gitignore` outside `init`. `fix` suggests a line
+  and nothing more.
 
 ## Recent decisions (not already in 04)
 
-- None beyond `04` sections 15, 16, 17, 18 and 19.
+- None beyond `04` sections 15, 16, 17, 18, 19 and 20.
 
 ## Known limitations
 
@@ -164,8 +173,29 @@ exceptions first, retention (last run, `--keep`, `--clean`), `--no-open`,
 - Renaming onto an existing path is refused immediately before the rename, but
   a microsecond TOCTOU window remains between the check and the rename.
   `rename(2)` has no portable fail-if-exists mode. See `04` 17.14.
-- No before-copies. Deferred to `review`; the call site in `executeFile()` is
-  marked. See `04` 17.7.
+- **Before-copies cost one copy of every original a run overwrites.** Bounded by
+  `retain`, which defaults to one run, but a first run over a photo-heavy
+  project can be hundreds of megabytes. `review` prints the size of the store
+  and names `--clean`; it does not warn above a threshold.
+- **Two concurrent `fix` runs over one project can lose one run's manifest
+  entry.** The manifest is a read-merge-write at the end of a run, and the
+  window is microseconds wide. A lock file would close it and is not worth the
+  machinery. See `04` 20.2.
+- **A hard second SIGINT skips the manifest write.** That run's before-copies
+  are hash-named and unreferenced, so the next prune collects them. Correct
+  outcome, no extra code.
+- **A page with two hundred cards is a heavy page.** Lazy loading and
+  exceptions-first make it usable, not small. The agent-vision contact sheet
+  from `04` section 12 stays deferred.
+- **`review` has no `--json`.** The manifest is already stable JSON at a known
+  path, and a second serialization that drifts is worse than none. See `04`
+  20.12.
+- **The review page is only ever as current as its last render.** `review`
+  detects an output that changed or vanished since the run and says so, but it
+  does not re-render itself; a page left open shows what it showed.
+- **A copy of an image is a copy of an image.** Anything sensitive in the repo
+  is now also under `.rasterwright/`, which is why the ignore hint matters and
+  why `review --clean` is a first-class command rather than an afterthought.
 
 ## Roadmap (in order)
 
@@ -174,9 +204,9 @@ exceptions first, retention (last run, `--keep`, `--clean`), `--no-open`,
 3. (folded into 2a) Deterministic operations through one Sharp pipeline
 4. Byte-budget execution (done): quality search JPEG/WebP, lossless PNG attempt,
    explicit failure.
-5. Idempotence hardening tests (current)
-6. `review` (current): static HTML, before-copies, exceptions first
-7. `init`
+5. Idempotence hardening tests (done, folded into the phases above)
+6. `review` (done): static HTML, before-copies, exceptions first
+7. `init` (current)
 8. Agent-facing docs (SKILL.md), packaging polish
 
 ## Human validation pending
@@ -185,3 +215,9 @@ exceptions first, retention (last run, `--keep`, `--clean`), `--no-open`,
   Nothing in this session touched that checkout. A human should run
   `fix --dry-run` there first, read the plan, and only then run `fix` on a
   clean git working tree.
+- **The review page under a human eye.** It has now been driven headlessly - the
+  page loads with no console errors, all thirteen images resolve, and the
+  overlay, zoom dialog, per-pane buttons, filters and `/` shortcut all behave -
+  but nobody has yet looked at it and judged whether the comparison is actually
+  useful at a glance. That is the remaining question, and it is a design one
+  rather than a correctness one.

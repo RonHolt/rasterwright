@@ -10,7 +10,16 @@ import {
   INTERRUPTED_REASON,
   type ExecuteContext,
 } from './operations/execute.js';
-import { classifyPath, surveyGit } from './operations/git.js';
+import { classifyPath, isIgnored, surveyGit } from './operations/git.js';
+import {
+  collectGarbage,
+  emptyManifest,
+  entriesFrom,
+  pruneRuns,
+  readManifest,
+  resolveReviewDir,
+  writeManifest,
+} from './review/store.js';
 import { planFile } from './operations/plan.js';
 import { defaultPathSemantics, validatePlanSet, type PathSemantics } from './operations/plan-set.js';
 import { createResolver } from './config/resolve.js';
@@ -29,6 +38,7 @@ import type {
   FixReport,
   FixResult,
   PlanSetConflict,
+  ReviewManifest,
 } from './types.js';
 
 /**
@@ -174,6 +184,14 @@ export interface RunFixOptions extends RunFixPlanOptions {
   noGit?: boolean;
   /** `--backup-dir`: copy each original here before overwriting it. */
   backupDir?: string;
+  /**
+   * `--no-review`: do not keep before-copies and do not record a run.
+   *
+   * The escape hatch for a tree that genuinely cannot hold a `.rasterwright/`
+   * directory. Without it a failed copy fails its file, which is the strict and
+   * correct default; with it the run proceeds and `review` has nothing to show.
+   */
+  noReview?: boolean;
 }
 
 export interface RunFixResult {
@@ -186,13 +204,14 @@ export interface RunFixResult {
  *
  * The ordering below is the safety property, not an implementation detail:
  *
- *   1. validate `--backup-dir`
+ *   1. validate `--backup-dir` and `.rasterwright/`
  *   2. plan (read-only)
  *   3. the git precondition
  *   4. recover interrupted renames, then sweep stale temp files
  *   5. install the signal handlers
  *   6. execute, with bounded concurrency
  *   7. clean up, uninstall, report
+ *   8. record the run for `review`
  *
  * Steps 4 onward write. Steps 1 to 3 must therefore come first, or a run that
  * refuses because it is outside a repository has still modified the tree, and
@@ -203,11 +222,13 @@ export async function runFix(
   version: string,
   options: RunFixOptions = {},
 ): Promise<RunFixResult> {
-  // 1. Validation only. It creates nothing: a run that is about to be refused
-  //    for another reason, or that turns out to have nothing to write, must not
-  //    leave a directory behind. The copies create it on the first write.
+  // 1. Validation only. Neither of these creates anything: a run that is about
+  //    to be refused for another reason, or that turns out to have nothing to
+  //    write, must not leave a directory behind. The copies create them on the
+  //    first write.
   const backupDir =
     options.backupDir === undefined ? undefined : resolveBackupDir(config.root, options.backupDir);
+  const reviewDir = options.noReview === true ? undefined : resolveReviewDir(config.root);
 
   // 2. The same preflight the dry run reports, so the executor runs against the
   //    plan set the dry run described rather than one a second preflight built.
@@ -272,6 +293,7 @@ export async function runFix(
       registry,
       stop,
       backupDir,
+      reviewDir,
     };
 
     results = await mapWithConcurrency(
@@ -332,10 +354,116 @@ export async function runFix(
     // run actually touched.
     results: results.filter((result) => result.status !== 'unchanged'),
     unrecovered: recovery.needsAttention,
+    reviewRecorded: false,
     diagnostics,
   };
 
+  // 8. The manifest, written once, after the pool has drained. An interrupted
+  //    run therefore records exactly what it completed rather than nothing:
+  //    every remaining worker returns `skipped`, the pool drains normally, and
+  //    control reaches here. Only a second SIGINT, which exits from the signal
+  //    handler, skips this - and the before-copies that run took are hash-named
+  //    and unreferenced, so the next prune collects them.
+  if (reviewDir !== undefined) {
+    report.reviewRecorded = await recordRun(reviewDir, report, diagnostics);
+    if (report.reviewRecorded) diagnostics.push(...gitignoreHint(config.root));
+  }
+
   return { report, diagnostics };
+}
+
+/**
+ * Append this run to the review manifest, prune, and collect garbage.
+ *
+ * Returns whether anything was recorded.
+ *
+ * ## A run that wrote nothing records nothing
+ *
+ * Not "a run with no results": a second, idempotent `fix` over a project with a
+ * permanently unfixable file still reports that file as skipped, and recording
+ * that as a run would prune away the run that actually changed something and
+ * garbage-collect its before-copies. So the test is whether this run *wrote*.
+ * That keeps two guarantees intact at once: a second run leaves the review
+ * directory byte-identical, and the page always describes the run that produced
+ * the files in the working tree.
+ *
+ * A manifest that cannot be read or written is a diagnostic, never a failure.
+ * The images are already correct and on disk by the time this runs; failing the
+ * command over its bookkeeping would report a successful fix as a broken one.
+ */
+async function recordRun(
+  reviewDir: string,
+  report: FixReport,
+  diagnostics: string[],
+): Promise<boolean> {
+  if (!report.results.some((result) => result.status === 'fixed')) return false;
+
+  let manifest: ReviewManifest;
+  try {
+    manifest = readManifest(reviewDir) ?? emptyManifest();
+  } catch (error) {
+    diagnostics.push(
+      `${messageOf(error)}; this run's images are fixed, but it was not recorded for review`,
+    );
+    return false;
+  }
+
+  manifest.runs.unshift({
+    runId: report.runId,
+    finishedAt: new Date().toISOString(),
+    rasterwrightVersion: report.rasterwrightVersion,
+    engine: report.engine,
+    permissions: report.permissions,
+    interrupted: report.summary.interrupted,
+    summary: report.summary,
+    entries: entriesFrom(report),
+  });
+  pruneRuns(manifest);
+
+  // The manifest is written *before* anything is collected. A collection that
+  // ran first and a write that then failed would leave a manifest referring to
+  // before-copies that no longer exist, which is the one state that turns a
+  // recoverable bookkeeping failure into a page with missing images. In the
+  // other order the worst case is a copy nothing refers to, which the next
+  // prune removes.
+  try {
+    await writeManifest(reviewDir, manifest);
+    const collection = await collectGarbage(reviewDir, manifest);
+    diagnostics.push(...collection.diagnostics);
+  } catch (error) {
+    diagnostics.push(
+      `${messageOf(error)}; this run's images are fixed, but it was not recorded for review`,
+    );
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Suggest ignoring `.rasterwright/`, once, and never edit `.gitignore`.
+ *
+ * Writing to a file the user version-controls, as a side effect of an image fix,
+ * is exactly the surprise the rest of this tool is designed to avoid: it would
+ * turn up unexplained in their next `git diff`. `init` writes that line, on
+ * purpose, because generating the config is what the user asked it to do.
+ *
+ * Silence is the answer to every uncertainty here. Exit `1` from `check-ignore`
+ * means "not ignored" and is the only case worth a word; anything else, git
+ * included being absent, means Rasterwright does not know, and a confident wrong
+ * answer is worse than saying nothing. That is the rule `operations/git.ts`
+ * already follows.
+ */
+function gitignoreHint(root: string): string[] {
+  if (isIgnored(root, '.rasterwright/') !== false) return [];
+  return [
+    '.rasterwright/ holds this run\'s review data and is not ignored by git; ' +
+      'add `.rasterwright/` to .gitignore so it is not committed',
+  ];
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** True when anything about this run is still outstanding. Drives the exit code. */

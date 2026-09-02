@@ -150,6 +150,11 @@ function renderSummary(report: FixReport): string[] {
   if (report.results.some((result) => result.plan.requiredPermissions.includes('allowRenames'))) {
     lines.push('Rerun with --allow-renames to perform the filename changes above.');
   }
+  // Only when this run recorded something. Pointing at a page that would show
+  // an older run's files, or none at all, is worse than saying nothing.
+  if (report.reviewRecorded) {
+    lines.push('Run `rasterwright review` to see the before and after side by side.');
+  }
 
   return lines;
 }

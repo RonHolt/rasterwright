@@ -130,12 +130,20 @@ export function copyGitProject(name: string, options: { commit?: boolean } = {})
   return root;
 }
 
-/** Every file under `root`, repo-relative POSIX, with its content hash. Sorted. */
+/**
+ * Every file under `root`, repo-relative POSIX, with its content hash. Sorted.
+ *
+ * `.git` and `.rasterwright` are skipped. The review directory holds a run id
+ * and a timestamp that differ on every run, so including it would make every
+ * "two runs produce the same tree" assertion fail for a reason that has nothing
+ * to do with images. The review output has its own assertions instead; point
+ * this function straight at `<root>/.rasterwright` to hash it.
+ */
 export function hashTree(root: string): Map<string, string> {
   const hashes = new Map<string, string>();
   const walk = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === '.git') continue;
+      if (entry.name === '.git' || entry.name === '.rasterwright') continue;
       const absolute = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         walk(absolute);
@@ -157,7 +165,7 @@ export function residue(root: string): string[] {
   const found: string[] = [];
   const walk = (dir: string): void => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === '.git') continue;
+      if (entry.name === '.git' || entry.name === '.rasterwright') continue;
       const absolute = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         walk(absolute);

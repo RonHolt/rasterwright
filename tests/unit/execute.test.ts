@@ -56,6 +56,7 @@ function contextFor(root: string, policy: Policy, render?: ExecuteContext['rende
     registry: new TempRegistry(),
     stop: createStopFlag(),
     backupDir: undefined,
+    reviewDir: undefined,
   };
   if (render !== undefined) context.render = render;
   return context;
