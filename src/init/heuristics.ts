@@ -513,7 +513,7 @@ export function closeRules(rules: readonly ProposedRule[], infos: readonly Image
 }
 
 /**
- * Raise one limit by one rung. Returns false when both ladders have topped out.
+ * Raise one limit by one rung. Returns false when no eligible ladder can move.
  *
  * In practice this nearly always moves `maxWidth`. A nearest-rank p95 leaves at
  * most 5% of a group above it, and the tolerance is 5%, so a freshly proposed
@@ -521,6 +521,18 @@ export function closeRules(rules: readonly ProposedRule[], infos: readonly Image
  * the width ladder has topped out on an unusually large corpus. That is by
  * design rather than by accident: the byte percentile is the looser of the two
  * precisely so that bytes are not what a generated config argues with.
+ *
+ * A ladder is only eligible when its own check is what the rule is failing.
+ * Loosening `maxWidth` cannot retire a byte violation, so a corpus whose byte
+ * ladder has topped out must not have its width ceiling walked up as a
+ * consolation: that produced `maxWidth: 4000` on a static site whose widest
+ * image is 2800, one line under a comment stating exactly that. The generated
+ * numbers have to survive being read next to their own provenance.
+ *
+ * The guard cannot stall the loop. `overLimit` is only counted when a width or
+ * a byte finding is present, so a rule over tolerance always has at least one
+ * eligible ladder; if that ladder has topped out, the honest answer is the one
+ * this returns.
  */
 function bumpRule(rule: ProposedRule, verdict: RuleVerdict): boolean {
   // Width first on a tie: it is the limit a human reads as the headline of a
@@ -530,12 +542,14 @@ function bumpRule(rule: ProposedRule, verdict: RuleVerdict): boolean {
 
   for (const which of order) {
     if (which === 'width') {
+      if (verdict.widthOver === 0) continue;
       const next = WIDTH_LADDER.indexOf(rule.maxWidth) + 1;
       if (next > 0 && next < WIDTH_LADDER.length) {
         rule.maxWidth = WIDTH_LADDER[next]!;
         return true;
       }
     } else {
+      if (verdict.bytesOver === 0) continue;
       const next = BYTE_LADDER.findIndex((rung) => rung.bytes === rule.maxBytes.bytes) + 1;
       if (next > 0 && next < BYTE_LADDER.length) {
         rule.maxBytes = BYTE_LADDER[next]!;

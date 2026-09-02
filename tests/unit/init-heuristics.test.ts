@@ -476,15 +476,33 @@ describe('closure loop', () => {
     expect(closeRules(rules, infos).steps).toBe(0);
   });
 
-  it('stops at the step cap rather than looping on an unsatisfiable corpus', () => {
+  it('stops rather than looping on an unsatisfiable corpus', () => {
     const paths = filesIn('assets', 20);
     const infos = paths.map((path) => image(path, { width: 100, bytes: 20_000_000 }));
     const rules = proposeRules(anchorsFor(paths), new Map(infos.map((info) => [info.path, info])));
 
     const closed = closeRules(rules, infos);
     expect(closed.steps).toBeLessThanOrEqual(MAX_CLOSURE_STEPS);
-    // Both ladders top out, so the numbers stay honest and the summary says how
-    // many files the config flags.
+    // The byte ladder tops out immediately and width is not implicated, so the
+    // numbers stay honest and the summary says how many files the config flags.
+    expect(closed.rules[0]!.maxBytes.label).toBe('5mb');
+  });
+
+  it('never walks the width ladder to answer a byte violation', () => {
+    // Narrow files far over a byte ceiling that has topped out. Loosening
+    // maxWidth cannot retire a byte finding, and doing it anyway produced
+    // `maxWidth: 4000` on a corpus whose widest image is 100 - a number
+    // contradicting the provenance comment written directly above it.
+    const paths = filesIn('assets', 100);
+    const infos = paths.map((path) => image(path, { width: 100, bytes: 20_000_000 }));
+    const rules = proposeRules(anchorsFor(paths), new Map(infos.map((info) => [info.path, info])));
+    expect(rules[0]!.maxWidth).toBe(640);
+
+    const closed = closeRules(rules, infos);
+    const verdict = verify(closed.rules, infos).perRule.get(closed.rules[0]!.glob);
+    expect(verdict?.widthOver).toBe(0);
+    expect(verdict?.bytesOver).toBe(100);
+    expect(closed.rules[0]!.maxWidth).toBe(640);
     expect(closed.rules[0]!.maxBytes.label).toBe('5mb');
   });
 
