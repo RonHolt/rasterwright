@@ -85,7 +85,11 @@ queued. Decisions in `04` section 22 - see Human validation pending below.
 
 ## Recent decisions (not already in 04)
 
-- None beyond `04` sections 15-22.
+- None beyond `04` sections 15-23. Section 23 is the searched-down quality
+  validation: what the floor of 40 actually looks like, why a byte ceiling is a
+  weak lever on flat-colour art, the planner/pipeline resize disagreement it
+  exposed, and the failure message that printed a ceiling and the size that
+  missed it as the same number.
 
 ## Known limitations
 
@@ -99,6 +103,11 @@ queued. Decisions in `04` section 22 - see Human validation pending below.
   (counted, named in a comment); and the generated config describes the
   repository, not an intention - ladder numbers, not direct measurement, but
   equally authoritative-looking.
+- Quality is a weak lever on flat-colour art: across the whole 40-82 band a
+  logo and a flat vector illustration span a factor of 1.2 in bytes where a
+  photograph spans 2.1. A byte ceiling on that kind of file either fits near
+  the top of the band or cannot be reached at all, and the floor can never be
+  reached by a budget (see `04` 23.2).
 - A byte budget is met by quality alone (dimensions/format fixed before
   encoding; an unreachable ceiling fails explicitly, naming three manual
   remedies, see `04` 19.8), applies to every encode under its rule, not just
@@ -184,19 +193,35 @@ Done on 2026-09-02 against the real theme
   early (`fe7fd28`), and a review flag calling a format conversion a
   quality drop (`058f3cc`).
 
+Done on 2026-09-02, second pass, on a lab copy of four real specimens at four
+budget tiers (`04` section 23):
+
+- **The floor of 40 is acceptable on all four content types** - photograph,
+  fine-text logo, photographic gradient, flat vector illustration - judged at
+  1:1 and at 2x zoom. It was reached by a budget on the gradient (q41) and
+  forced outright in a fourth tier for the two specimens whose curves are too
+  flat for a budget to push them there. The photograph's survival at 40 is
+  mozjpeg's trellis quantization doing the work, so the floor is calibrated
+  for that encoder.
+- Two real bugs fixed on the way: the planner named resize dimensions the file
+  never got (1600x625 planned, 1598x625 written), and an unreachable-ceiling
+  failure printed the ceiling and the best attempt as the same number.
+- The overlay and 1:1 zoom modes on the review page do their job well.
+
 Still open, in rough order:
 
-1. **Visual quality of the quality search** on a real photograph, a logo
-   with fine text, and a gradient. Only the quality 82 results have been
-   looked at so far.
-2. **Review page design** beyond a first glance: narrow widths, overlay and
-   zoom in daily use, whether 200 cards stay navigable.
-3. **`init` taste** in an unfamiliar repository. The ladders matched a
+1. **Review page defaults.** Side by side scales `before` and `after` to their
+   own cells, so a 2399x938 original renders half again as wide as its 1598x625
+   output and cannot be compared to it honestly; wide images letterbox badly in
+   a fixed-height cell. Overlay fixes both and is one click away. Also still
+   unseen: narrow widths (the CSS stacks the pair, never verified in a browser -
+   Chrome refused the window resize) and whether 200 cards stay navigable.
+2. **`init` taste** in an unfamiliar repository. The ladders matched a
    hand-written policy on the theme; that is one data point.
-4. **Messy real-world inputs**: camera JPEGs with orientation and EXIF,
+3. **Messy real-world inputs**: camera JPEGs with orientation and EXIF,
    Photoshop exports with ICC profiles, CMYK, 16-bit PNGs, animated WebP.
-5. **macOS and Windows**: case-insensitive path semantics, the two-step
+4. **macOS and Windows**: case-insensitive path semantics, the two-step
    case-only rename and its recovery, directory fsync tolerance, opener.
-6. **Does the skill change agent behaviour?** Install
+5. **Does the skill change agent behaviour?** Install
    `skills/rasterwright/SKILL.md` and compare an agent with and without it.
-7. **Publishing** is the human's call: `private: true`, 0.1.0, no remote.
+6. **Publishing** is the human's call: `private: true`, 0.1.0, no remote.

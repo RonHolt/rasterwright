@@ -2085,3 +2085,159 @@ while the package is private.
 No executable bit fixed in the build tree. `dist/cli/index.js` is mode `644`
 there, and npm sets the bit on `bin` targets at install time. Verified:
 `node_modules/.bin/rasterwright` is a correct relative symlink to a `755` file.
+
+---
+
+## 23. Decisions from the searched-down quality validation
+
+The first real `fix` run (section 22, and `05`) only ever looked at quality 82
+output. This pass drove the search down deliberately, on a lab copy of four real
+specimens taken from the theme - an interior photograph (`nolanville`, 2399x938
+JPEG), a logo with a fine tagline (`cah-logo`, 600x135 PNG with alpha), a
+photographic gradient (`footer-bg`, 1920x857 WebP, a dark sky) and a flat vector
+illustration (`mountains`, 1355x445 PNG) - each at four budget tiers whose
+`maxBytes` was measured from that specimen's own quality curve.
+
+### 23.1 The floor of 40 is not a cliff, on any of the four content types
+
+Where the search landed, and what the output looks like at 1:1:
+
+| specimen | moderate | tight | brutal | forced to the floor |
+| -------- | -------- | ----- | ------ | ------------------- |
+| photo (JPEG) | q80 | q68 | q60 | q40 |
+| gradient (WebP) | q70 | q53 | q41 | q40 |
+| logo (WebP) | q76 | q62 | q49 | q40 |
+| flat vector (WebP) | q68 | q47 | *failed* | q40 |
+
+Error against the source, measured on flattened RGB:
+
+| specimen | at the top tier | at quality 40 |
+| -------- | --------------- | ------------- |
+| photo | 36.6 dB PSNR | 31.6 dB |
+| gradient | 37.6 dB | 35.5 dB |
+| logo | 42.1 dB | 38.2 dB |
+| flat vector | 44.7 dB | 42.6 dB |
+
+Looked at 1:1 and, for the small specimens, at 2x nearest-neighbour zoom, none
+of the quality-40 outputs is unacceptable:
+
+- **The photograph at q40 holds up better than the number suggests.** The rug
+  weave and wood grain lose grain, but there is no blocking and no ringing on
+  the high-contrast fireplace edges. libvips is encoding JPEG through mozjpeg -
+  the tool's q80 output is 138,030 bytes where a plain libjpeg q80 encode of the
+  same pixels is 168,943 - and trellis quantization is doing the work that makes
+  a floor of 40 survivable. **The floor is calibrated for mozjpeg, not for
+  libjpeg.** If the encoder ever changes, 40 has to be revisited.
+- **The gradient loses cloud micro-detail without banding.** Judged on a crop
+  brightened 2.6x, because at the sky's real luminance nothing is visible at
+  all. No hard banding at any tier.
+- **Fine text is essentially untouched.** The `DREAMS WITHIN REACH` tagline at
+  q40 is indistinguishable from the source at 2x zoom. WebP handles flat-colour
+  text on transparency extremely well.
+- **The flat illustration gets faint mottling in the large fills** and a couple
+  of stray specks near a ridge line, invisible at 1:1.
+
+So the answer to "is the floor of 40 acceptable" is yes for these four content
+classes, and the floor stays at 40.
+
+### 23.2 Quality is a weak lever on flat-colour art, and the failure is the honest outcome
+
+The photograph's curve spans 85,701 to 179,376 bytes across the band - a factor
+of 2.1. The logo's spans 10,866 to 13,038, a factor of 1.2, and the flat
+illustration's 13,568 to 16,484, a factor of 1.2.
+
+The consequence is structural, not a defect: **on flat-colour art a byte ceiling
+either fits near the top of the band or cannot be reached at all.** There is no
+useful middle. `c-brutal/flat.png` failed for exactly this reason, 322 bytes
+over a ceiling the whole 40-81 band could not close, and the failure is right -
+the remedies it names (raise `maxBytes`, lower the dimensions) are the only ones
+that would work. It also means the floor can never be *reached* by a budget on
+this kind of file, which is why the lab needed a tier that sets
+`quality: { start: 40, floor: 40 }` outright to see what 40 looks like there.
+
+The flat illustration's curve also contains a real inversion in real data
+(q66 is 14,692 bytes, q68 is 14,624), which is the non-monotonicity section 19.3
+describes, observed outside a synthetic fuzz for the first time.
+
+### 23.3 The planner named dimensions the file never got
+
+The bug the run exposed, and the one worth the phase. `fix --dry-run` said
+`resize 2399x938 -> 1600x625`; the file written was **1598x625**. The review
+page shows both in one card, `dimensions 2399x938 to 1598x625` directly above
+`resize 2399x938 to 1600x625`, which is how it was noticed.
+
+The cause is a double application of the fit. The planner computed one ratio
+from the limits and floored both axes, giving the box 1600x625. The pipeline
+then handed *that box* to `fit: 'inside'`, which derives its own scale from
+whatever box it is given. A floored box is a slightly different shape from the
+source, so libvips fitted the source into it and shrank the width again.
+
+This was known and written down as intended - a test called *can land under the
+planned target, never over it* asserted it, on the reasoning that short is
+compliant and over would break idempotence. Real use says otherwise: the dry
+run's whole claim is that it states what will happen, and a report that
+contradicts itself inside one card is worse than a pixel.
+
+The fix separates the two roles:
+
+- **The pipeline hands libvips the policy's limits**, with the source's own
+  dimension standing in for a limit the policy does not set, which is the shape
+  `fit: 'inside'` is designed to be given. The quarter-turn axis swap moves onto
+  the limits along with it.
+- **`resize.to` becomes a pure prediction** of what comes back, rounded to
+  nearest rather than floored, because that is what libvips does. Verified
+  against sharp 0.35.4 over 220 random source/limit pairs: 220 exact, no misses.
+
+Rounding to nearest cannot put the output over a limit, which is what the
+flooring was defending. The axis the ratio came from lands on its limit exactly
+(`src * (maxWidth / src)` is `maxWidth`). The other is strictly below a limit
+that is itself an integer, so rounding up can at most reach that integer. Both
+directions of idempotence still hold.
+
+**This changes output bytes.** Files where flooring lost a pixel now come out
+one or two pixels larger - the photograph goes from 1598x625 to 1600x626. A file
+already written under the old behaviour is not rewritten, because it is still
+under its limits and so plans no resize at all.
+
+### 23.4 A ceiling and the size that missed it must not print as the same number
+
+`formatBytes` gives one decimal below 10 units and none above, so 13,926 bytes
+and 14,248 bytes both print as `14 KB`. The failure message came out as *cannot
+reach 14 KB at 1355x445 without dropping below quality 40 (best: 14 KB at
+quality 40)*, which reads as a bug in Rasterwright rather than a fact about the
+image - the exact thing that trains someone to stop reading failure messages.
+
+The collision is not bad luck. The search stops at the first size over the line,
+so a ceiling and the best attempt are close together *by construction*, and
+every one of the three unreachable-ceiling messages compares them in one
+sentence.
+
+`formatBytesPair(allowed, actual)` widens precision until the two strings
+differ, and falls back to exact bytes. `formatBytes` grew an optional `decimals`
+argument to serve it and is otherwise unchanged, so no existing output moved.
+The general display convention was deliberately left alone: making every size
+under 100 KB carry a decimal would have churned a lot of expected output to fix
+a problem that only bites where two close numbers share a sentence.
+
+### 23.5 The review page's side-by-side compares at two different scales
+
+Not fixed, recorded. `before` and `after` are laid out in one grid and each is
+scaled to fit its own cell, so a 2399x938 original renders about 50% wider than
+its 1598x625 output. Judging quality across that difference is not possible -
+the smaller rendering looks sharper for free.
+
+The overlay mode is the answer and it is good: one click, both images at the
+same scale, a reveal slider, and `Zoom before` / `Zoom after` modals that show
+1:1 pixels with a scrollbar. Everything needed to actually judge the pixels is
+there. What is wrong is only which mode is the default and how the default
+reads. Worth revisiting if the page gets another pass; not worth a change now
+without more use behind it.
+
+Two smaller notes from the same session:
+
+- A wide image in a fixed-height cell letterboxes badly. A 3:1 banner occupies
+  the middle third of its cell against a checkerboard, and with sixteen cards
+  that is a lot of scrolling past nothing.
+- Filtering to a card that has never been scrolled into view shows empty boxes
+  for a moment before the lazy images load. It resolves itself; it looks broken
+  while it lasts.
