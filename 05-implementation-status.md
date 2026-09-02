@@ -7,7 +7,7 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `1211daf docs: record execution phase as complete in implementation status`,
+- HEAD: `7460214 feat: enforce image byte budgets`
   plus uncommitted work implementing byte-budget execution.
 - Implemented commands: `check` (`--verbose`, `--json`), `fix --dry-run`
   (`--json`, `--allow-renames`), and `fix` (`--allow-renames`, `--json`,
@@ -27,28 +27,15 @@ behaviour in `README.md`; this file only records where the implementation is.
 | Batch plan preflight (`blocked` status, collisions fixture) | `7974008` |
 | Execution foundation, unwired (phase 2a) | `3c3076e` |
 | Execution wired (phase 2b) | `9e7195f` |
+| Byte-budget execution | `7460214` |
 | Byte-budget execution | uncommitted |
 
 ## Current phase
 
-**Byte-budget execution.** Done. `renderCandidate` builds the Sharp chain
-once and re-runs only the encoder: encode at `quality.start`, accept if it
-fits, otherwise binary-search `[floor, start - 1]` for the highest quality
-whose *measured* output fits. PNG gets one maximum-effort lossless attempt
-because it has no dial. Nothing that misses the ceiling is written: the
-pipeline hands its best attempt back and `verifyCandidate` refuses it, with
-a failure message naming the floor, the best size reached and the manual
-remedies. Budget-driven plans are no longer skipped, and `skipReasonFor`'s
-budget branch is gone.
-
-Review found one real bug in the first cut and it is fixed: the plan read
-`maxBytes` and `quality` from the rule matching the file's *current* path
-while verification evaluates the candidate against the rule matching its
-*target* path, so a format conversion that moved a file under another glob
-searched against the wrong ceiling. `planFile()` now takes an optional
-`ruleFor` resolver callback and stays pure. See `04` 19.12.
-
-Next: idempotence hardening tests (roadmap item 5).
+**`rasterwright review`.** Before-copies taken by `fix` at the marked
+call site, manifest under `.rasterwright/review/`, static HTML page with
+exceptions first, retention (last run, `--keep`, `--clean`), `--no-open`,
+`--no-review` on `fix`. Status: not started.
 
 ## Non-negotiable invariants
 
@@ -188,7 +175,7 @@ Next: idempotence hardening tests (roadmap item 5).
 4. Byte-budget execution (done): quality search JPEG/WebP, lossless PNG attempt,
    explicit failure.
 5. Idempotence hardening tests (current)
-6. `review` (static HTML, before-copies, exceptions first)
+6. `review` (current): static HTML, before-copies, exceptions first
 7. `init`
 8. Agent-facing docs (SKILL.md), packaging polish
 
