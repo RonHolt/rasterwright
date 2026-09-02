@@ -7,14 +7,14 @@ Product scope lives in `03`, architecture in `04`, user-facing behaviour in
 
 ## Current state
 
-- HEAD: `972bf80 test: close the audit findings before human validation`
+- HEAD: `058f3cc fix: use adaptive PNG filtering and name format conversions in review`
   contract`, which is the packaging and agent-docs work.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
   (`--verbose`, `--json`), `fix --dry-run` (`--json`, `--allow-renames`), `fix`
   (`--allow-renames`, `--json`, `--no-git`, `--backup-dir`, `--no-review`,
   `--concurrency`), `review` (`--keep`, `--clean`, `--no-open`). Byte budgets
-  enforced. Baseline: 875 tests across 25 files, typecheck and build clean.
+  enforced. Baseline: 885 tests across 26 files, typecheck and build clean.
   Sharp pinned exactly at `0.35.4`. The vertical-slice loop (`04` section 11)
   is closed: check, fix, check clean, fix again writing nothing, before/after
   page; `init` closes the other end by generating a config where none exists.
@@ -168,39 +168,35 @@ execution; (5) idempotence hardening tests (folded into the phases above); (6)
 
 ## Human validation pending
 
-The autonomous v0 build stops here. Everything below needs a human, in
-roughly this order.
+Done on 2026-09-02 against the real theme
+(`~/bokka-theme-env/wp-content/themes/bokka-theme`), by Ron:
 
-1. **Real project, read first.** In
-   `~/bokka-theme-env/wp-content/themes/bokka-theme` on a clean working
-   tree: `rasterwright check`, then `rasterwright fix --dry-run
-   --allow-renames`. Read the plan. Expected today: three PNG/JPEG rewrites
-   and one `.png` -> `.webp` extension correction (`bokka-logo-transparent`),
-   which will break any reference to the old filename.
-2. **Real project, execute.** `rasterwright fix` (without renames first if
-   the reference risk is unclear), then `rasterwright check` should report
-   no errors, and a second `rasterwright fix` must write nothing. Open
-   `rasterwright review` and judge the pixels: the two `cah-form-osc` PNGs
-   (transparency, lossless re-encode toward 500 KB) and the resized
-   `nolanville_skinny` JPEG (quality search) are the ones to look at.
-3. **Visual quality of the quality search.** The tests assert byte ceilings,
-   never appearance. Judge quality 82 and the searched-down results on a
-   real photograph, a logo with fine text, and a gradient.
-4. **Review page design.** It was driven headlessly (no script errors, all
-   images resolve, overlay/zoom/filters work) but nobody has looked at it.
-   Layout, contrast, whether the comparison reads at a glance, narrow widths.
-5. **`init` taste.** Run `rasterwright init --config <scratch path>` in an
-   unfamiliar repository and judge whether the generated file is a starting
-   point worth keeping. The ladders matched a hand-written policy on the
-   theme; that is one data point.
-6. **Messy real-world inputs.** Camera JPEGs with orientation flags and
-   EXIF, Photoshop exports with ICC profiles, CMYK, 16-bit PNGs, animated
-   WebP. Fixtures are sharp-generated and cleaner than reality.
-7. **macOS and Windows.** Case-insensitive path semantics, the two-step
-   case-only rename and its recovery pass, directory fsync tolerance and the
-   browser opener were exercised on Linux only.
-8. **Does the skill change agent behaviour?** Install
-   `skills/rasterwright/SKILL.md` and give an agent an image task with and
-   without it.
-9. **Publishing** is the human's call: the package is `private: true`,
-   version 0.1.0, no remote, no release. `npm pack` works.
+- `check` found the four known problems; `fix --allow-renames` renamed the
+  mislabelled logo, resized and re-encoded the JPEG (366 KB to 272 KB at
+  quality 82), and failed both oversized PNGs honestly; `check` then had no
+  errors; a second `fix` traced zero writes; `review` opened in the browser
+  and read well at first glance.
+- The PNG failures exposed a real encoder gap (no adaptive filtering, fixed
+  in `058f3cc`). The correct policy was `format: webp` for those files; that
+  rule converted both at quality 82 with transparency intact, 91% smaller,
+  and a second run again wrote nothing.
+- Two CLI bugs found and fixed on the way: EPIPE crash when stdout closed
+  early (`fe7fd28`), and a review flag calling a format conversion a
+  quality drop (`058f3cc`).
+
+Still open, in rough order:
+
+1. **Visual quality of the quality search** on a real photograph, a logo
+   with fine text, and a gradient. Only the quality 82 results have been
+   looked at so far.
+2. **Review page design** beyond a first glance: narrow widths, overlay and
+   zoom in daily use, whether 200 cards stay navigable.
+3. **`init` taste** in an unfamiliar repository. The ladders matched a
+   hand-written policy on the theme; that is one data point.
+4. **Messy real-world inputs**: camera JPEGs with orientation and EXIF,
+   Photoshop exports with ICC profiles, CMYK, 16-bit PNGs, animated WebP.
+5. **macOS and Windows**: case-insensitive path semantics, the two-step
+   case-only rename and its recovery, directory fsync tolerance, opener.
+6. **Does the skill change agent behaviour?** Install
+   `skills/rasterwright/SKILL.md` and compare an agent with and without it.
+7. **Publishing** is the human's call: `private: true`, 0.1.0, no remote.
