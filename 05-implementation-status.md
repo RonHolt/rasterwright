@@ -7,7 +7,7 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `4b5c711 docs: record review phase as complete in implementation
+- HEAD: `3c73dbc feat: add starter config generation`
   status`, plus uncommitted work implementing `init`.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
@@ -38,25 +38,11 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current phase
 
-**`rasterwright init`. Complete, uncommitted.** A starter config from a
-read-only scan: images grouped by directory into at most three anchors,
-`maxWidth` from p90 of displayed widths and `maxBytes` from p95 of file sizes,
-each rounded up a fixed ladder, then a closure loop driven by the real evaluator
-that loosens each rule until at most `max(3, 5%)` of its images are over a
-limit. `--bare` writes the commented template with no scan; a repository with no
-images falls back to it. Refuses to overwrite without `--force`. Appends
-`.rasterwright/` to `.gitignore` inside a git work tree unless
-`--keep-gitignore`. Never emits `format` or `maxHeight`. See `04` section 21.
-
-Validated against `~/bokka-theme-env/wp-content/themes/bokka-theme` read-only:
-76 images scanned (78 skipped by `.gitignore`), one rule on
-`assets/src/images/**`, `maxWidth: 2000`, `maxBytes: 300kb`, three files over
-those limits. `init` predicted 5 errors and 24 warnings and a real `check`
-against the generated config reported 5 and 24. Nothing in that checkout was
-written; `git status` was identical before and after.
-
-Next phase: agent-facing docs (`SKILL.md`) and packaging polish, per the
-roadmap below.
+**Packaging and agent-facing docs.** LICENSE file, `prepare` build,
+no source maps in the tarball, README accuracy pass against `--help`,
+`skills/rasterwright/SKILL.md` teaching coding agents the CLI contract,
+local tarball install verified in a disposable project. Status: not
+started.
 
 ## Non-negotiable invariants
 
@@ -257,7 +243,7 @@ roadmap below.
 6. `review` (done): static HTML, before-copies, exceptions first
 7. `init` (done): scan, grouping heuristic, ladders, closure, templates,
    `.gitignore` handling
-8. Agent-facing docs (SKILL.md), packaging polish (current)
+8. Agent-facing docs (SKILL.md), packaging polish (current) (current)
 
 ## Human validation pending
 
