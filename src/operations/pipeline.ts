@@ -123,7 +123,18 @@ export async function renderCandidate(
     // Lossless, maximum effort, exactly once: there is no dial to search. An
     // over-budget result is a real failure and is reported as one, rather than
     // reached for with palette quantization that would silently change pixels.
-    const buffer = await chain.clone().png({ compressionLevel: 9, effort: 10, palette: false }).toBuffer();
+    //
+    // `adaptiveFiltering` is the one setting here that changes the output size
+    // rather than just how long libvips spends. Without it every scanline gets
+    // the same filter, and on truecolour RGBA screenshots that produced files
+    // *larger* than the originals: 652 KB grew to 694 KB, 731 KB to 1021 KB.
+    // Choosing a filter per row brought the same two files to 526 KB and
+    // 716 KB, pixel for pixel identical. `effort` moves nothing for non-palette
+    // output, and is kept only because it costs nothing there. See 04 section 19.
+    const buffer = await chain
+      .clone()
+      .png({ compressionLevel: 9, effort: 10, palette: false, adaptiveFiltering: true })
+      .toBuffer();
     return { buffer, format: 'png', bytes: buffer.length };
   }
 

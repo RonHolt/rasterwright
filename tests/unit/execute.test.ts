@@ -215,6 +215,9 @@ describe('executeFile', () => {
   });
 
   it('says PNG is lossless rather than pretending a search was possible', async () => {
+    // The re-encode here comes back no smaller than the source, which is a
+    // different thing to tell the user than "not small enough": there is
+    // nothing left for a rerun to find.
     const root = projectWith('noisy.png', 'noisy.png');
     const policy = policyOf([{ glob: 'assets/**', body: { maxBytes: 200 * 1024 } }]);
     const before = await fileResult(root, 'assets/noisy.png', policy);
@@ -225,10 +228,33 @@ describe('executeFile', () => {
 
     expect(result.status).toBe('failed');
     expect(result.reason).toMatch(/PNG is lossless, so a maximum-effort re-encode is the only lever/);
-    expect(result.reason).toMatch(/at 400x400, still over the 200 KB ceiling/);
-    expect(result.reason).toMatch(/or allow webp/);
+    expect(result.reason).toMatch(
+      /the lossless re-encode is [\d.]+ KB at 400x400, no smaller than the file already is, so PNG cannot get this image under the 200 KB ceiling/,
+    );
+    expect(result.reason).toMatch(/set format: webp for this glob, which keeps transparency/);
     expect(result.encode?.quality).toBeUndefined();
     expect(sha256(fs.readFileSync(path.join(root, 'assets', 'noisy.png')))).toBe(sha256(original));
+  });
+
+  it('says the PNG re-encode got smaller but not small enough when it did', async () => {
+    // The other half of the same message. Provoked with a stub, because a
+    // fixture that compresses by exactly the wrong amount would be pinning the
+    // test to libvips' output size rather than to the branch under test.
+    const root = projectWith('noisy.png', 'noisy.png');
+    const policy = policyOf([{ glob: 'assets/**', body: { maxBytes: 200 * 1024 } }]);
+    const before = await fileResult(root, 'assets/noisy.png', policy);
+    const plan = planFile(before, { allowRenames: true });
+    const smaller = fs.readFileSync(path.join(FIXTURE_IMAGES, 'screenshot.png'));
+    expect(smaller.length).toBeLessThan(before.image?.bytes ?? 0);
+
+    const context = contextFor(root, policy, renders(smaller, 'png'));
+    const result = await executeFile(context, plan, before);
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/PNG is lossless, so a maximum-effort re-encode is the only lever/);
+    expect(result.reason).toMatch(/it produced [\d.]+ KB at 480x360, still over the 200 KB ceiling/);
+    expect(result.reason).not.toMatch(/no smaller than the file already is/);
+    expect(result.reason).toMatch(/set format: webp for this glob, which keeps transparency/);
   });
 
   it('says which single quality was tried when the floor leaves no band', async () => {

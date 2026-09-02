@@ -81,6 +81,11 @@ async function pixels(bytes: Buffer): Promise<number[]> {
   return [...raw.subarray(0, 4)];
 }
 
+/** Every stored pixel, same caveat: what a lossless claim has to be checked against. */
+async function rawPixels(bytes: Buffer): Promise<Buffer> {
+  return sharp(bytes, { ignoreIcc: true }).raw().toBuffer();
+}
+
 async function iccOf(bytes: Buffer): Promise<Buffer | undefined> {
   return (await sharp(bytes).metadata()).icc;
 }
@@ -575,6 +580,34 @@ describe('the byte-budget search over real encodes', () => {
     // Incompressible: the maximum-effort re-encode buys nothing, which is
     // exactly why the executor has to fail this file rather than write it.
     expect(encoded.bytes).toBeGreaterThan(200 * 1024);
+  });
+
+  it('filters PNG rows adaptively, which shrinks the file without touching a pixel', async () => {
+    // The regression this guards: without `adaptiveFiltering`, a maximum-effort
+    // re-encode of a truecolour RGBA screenshot came out no smaller than the
+    // source, and on real files larger than it. One filter for the whole image
+    // handles gradients badly. See 04 section 19.
+    const bytes = fixture('screenshot.png');
+    const { encoded, output, candidate } = await render('screenshot.png', bytes, {
+      maxBytes: 300 * 1024,
+    });
+
+    const nonAdaptive = await sharp(bytes)
+      .png({ compressionLevel: 9, effort: 10, palette: false })
+      .toBuffer();
+
+    expect(encoded.format).toBe('png');
+    expect(encoded.quality).toBeUndefined();
+    expect(encoded.bytes).toBeLessThanOrEqual(nonAdaptive.length);
+    // And it is a real saving, not a tie: the non-adaptive encode is the size
+    // the source already was, so a rewrite would have bought nothing.
+    expect(encoded.bytes).toBeLessThan(bytes.length);
+    expect(encoded.bytes).toBeLessThanOrEqual(300 * 1024);
+
+    // Lossless is the whole claim. Every stored pixel, compared with the ICC
+    // import deliberately skipped so a colour change cannot hide behind it.
+    expect(output).toMatchObject({ format: 'png', hasAlpha: true, isOpaque: false });
+    expect((await rawPixels(candidate)).equals(await rawPixels(bytes))).toBe(true);
   });
 
   it('hands back the smallest probe when nothing fits, with the quality that made it', async () => {

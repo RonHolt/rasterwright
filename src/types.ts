@@ -820,8 +820,10 @@ export type ReviewFlag =
   | 'barely-shrank'
   /** A saving large enough to be worth confirming with your eyes. */
   | 'shrank-suspiciously'
-  /** A large saving with no resize behind it, so it was all quality. */
+  /** A large saving with no resize behind it and no format change, so it was all quality. */
   | 'quality-only-drop'
+  /** A large saving with no resize behind it, on a file that also changed format. */
+  | 'format-drop'
   /** The dimensions changed with no resize in the plan. Should be impossible. */
   | 'dimensions-without-resize';
 

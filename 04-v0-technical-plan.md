@@ -1551,6 +1551,43 @@ Three consequences worth stating:
   than the rule the user is looking at, the plan says which glob supplied it.
   A number with no provenance reads as a bug.
 
+**13. PNG needs `adaptiveFiltering`, because libvips' PNG encoder is not an
+optimizer.** Found by running `fix` over real screenshots. The
+"maximum-effort lossless" encode this section describes -
+`{ compressionLevel: 9, effort: 10, palette: false }` - produced files *larger*
+than the originals on truecolour RGBA content:
+
+| source | re-encode as shipped | with `adaptiveFiltering: true` |
+| ------ | -------------------- | ------------------------------ |
+| 652 KB | 694 KB               | 526 KB                         |
+| 731 KB | 1021 KB              | 716 KB                         |
+
+All three columns are the same pixels; the adaptive output was verified
+identical to the source with a raw-pixel comparison under `ignoreIcc`.
+
+Three things this settles:
+
+- **The filter is a size lever, and it was left at its worst setting.** PNG
+  picks one of five filters per scanline before deflate ever runs. Without
+  `adaptiveFiltering`, libvips uses one filter for the whole image, which
+  handles gradients badly. It is now on. `effort` moves nothing at all for
+  non-palette output and is kept only because it costs nothing there.
+- **A lossless re-encode can legitimately come out bigger, so "maximum effort"
+  was never a guarantee of smaller.** libvips runs one deflate pass with the
+  settings it is given. It does no zopfli or oxipng-style search over filter
+  and deflate strategies, and it is not trying to beat the source encoder,
+  which may well have done more work than it does. This is why the PNG refusal
+  now distinguishes "smaller, but not small enough" from "no smaller than the
+  file already is": only the first is a budget the user could reach by changing
+  dimensions.
+- **WebP is the real remedy for these files, and by a wide margin.** On the
+  `screenshot.png` fixture (480x360 RGBA, 330 KB) the numbers are 330 KB
+  non-adaptive, 142 KB adaptive, and 8 KB as WebP at quality 82 with the alpha
+  intact. Roughly an order of magnitude, on the class of file most likely to
+  carry transparency and therefore most likely to be a PNG. The PNG remedy
+  string names `format: webp` outright and says it keeps transparency, rather
+  than leaving the user to find that out.
+
 ---
 
 ## 20. Decisions from implementing `review`
@@ -1655,8 +1692,19 @@ so they can change without invalidating manifests written by an earlier version.
 | `grew` | savings below zero |
 | `barely-shrank` | savings under 2% on a `lossyReencode` |
 | `shrank-suspiciously` | savings over 95% |
-| `quality-only-drop` | savings over 70% with no `resize` applied |
+| `format-drop` | savings over 70% with no `resize` applied, on a file whose format changed |
+| `quality-only-drop` | savings over 70% with no `resize` applied and the format unchanged |
 | `dimensions-without-resize` | the dimensions moved with no `resize` or `autoOrient` applied |
+
+`format-drop` and `quality-only-drop` are one condition split in two, added
+after `04` 19.13 measured what a format change is actually worth. The original
+flag said "a large saving from quality alone, with no resize" about every
+oversized saving with nothing resized, including a PNG that came out as a WebP -
+where the saving is mostly the format and the quality dial may never have moved
+at all. A reviewer told to look for quality damage on a conversion is looking
+for the wrong thing. Same threshold and same no-resize condition, so the split
+changes no file's attention status; only the sentence differs, and
+`format-drop` sorts first because a conversion is the larger change.
 
 Two flags the scouting design proposed were dropped. `alpha-lost` is
 unreachable: `verifyCandidate` already fails any encode required to preserve

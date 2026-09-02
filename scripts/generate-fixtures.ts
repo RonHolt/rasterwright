@@ -59,6 +59,32 @@ function noiseAlpha(width: number, height: number, seed: number): Buffer {
   return data;
 }
 
+/**
+ * A screenshot-shaped RGBA image: smooth gradients, hard horizontal and
+ * vertical edges, a little sensor-style noise, and alpha that is genuinely used.
+ *
+ * This is the shape that exposed the PNG filtering problem in the wild. Flat
+ * noise cannot show it, because no row filter helps there; gradients can, and a
+ * single filter chosen for the whole image handles them badly enough to make a
+ * lossless re-encode come out *larger* than the source (04 section 19).
+ */
+function screenshotAlpha(width: number, height: number, seed: number): Buffer {
+  const random = mulberry32(seed);
+  const data = Buffer.allocUnsafe(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const at = (y * width + x) * 4;
+      const chrome = y % 40 < 3 || x % 53 < 2;
+      const jitter = Math.floor(random() * 6);
+      data[at] = chrome ? 30 : (Math.floor((x / width) * 180 + (y / height) * 50) + jitter) & 255;
+      data[at + 1] = chrome ? 30 : (Math.floor((y / height) * 200) + jitter) & 255;
+      data[at + 2] = chrome ? 30 : (Math.floor(120 + (x / width) * 80) + jitter) & 255;
+      data[at + 3] = (x + y) % 211 === 0 ? 0 : 255;
+    }
+  }
+  return data;
+}
+
 function solid(width: number, height: number, background: string) {
   return sharp({ create: { width, height, channels: 3, background } });
 }
@@ -111,6 +137,17 @@ const FIXTURES: Fixture[] = [
     build: () =>
       sharp(noiseAlpha(500, 500, 11), { raw: { width: 500, height: 500, channels: 4 } })
         .webp({ quality: 95, effort: 4 })
+        .toBuffer(),
+  },
+  // Truecolour RGBA with gradients: the case where a PNG re-encode without
+  // adaptive filtering is no smaller than the source, and with it is far
+  // smaller. Encoded here the way a screenshot tool would, with libvips'
+  // default (non-adaptive) filtering.
+  {
+    name: 'screenshot.png',
+    build: () =>
+      sharp(screenshotAlpha(480, 360, 23), { raw: { width: 480, height: 360, channels: 4 } })
+        .png({ compressionLevel: 9 })
         .toBuffer(),
   },
   { name: 'plain.png', build: () => solid(400, 300, '#33aa66').png({ compressionLevel: 9 }).toBuffer() },

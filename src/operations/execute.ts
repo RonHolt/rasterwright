@@ -357,7 +357,7 @@ async function executePlanned(
     return report('failed', verification.assertions.join('; '));
   }
   if (verification.blocking.length > 0) {
-    return report('failed', refusalFor(verification.blocking, rendered, inspected.info));
+    return report('failed', refusalFor(verification.blocking, rendered, inspected.info, measured.bytes));
   }
 
   // 8. Bytes that did not change are not worth writing. This is checked *after*
@@ -450,6 +450,7 @@ function refusalFor(
   blocking: readonly Finding[],
   rendered: RenderedCandidate | undefined,
   candidate: ImageInfo,
+  sourceBytes: number,
 ): string {
   const ceiling = blocking.find((finding) => finding.check === 'maxBytes');
   if (ceiling === undefined || rendered === undefined) {
@@ -463,6 +464,20 @@ function refusalFor(
   const remedies = REMEDIES[rendered.format];
 
   if (rendered.quality === undefined) {
+    // Two different situations, and conflating them wastes the user's time. A
+    // re-encode that got smaller but not small enough leaves room to argue
+    // about dimensions; one that came back no smaller than the file already is
+    // means the source is already about as compact as this encoder makes it,
+    // and no amount of re-running will change that. Say which one happened.
+    // `sourceBytes` is 0 only when there was no `check` result to measure, in
+    // which case there is nothing to compare against. See 04 section 19.
+    if (sourceBytes > 0 && rendered.bytes >= sourceBytes) {
+      return (
+        `PNG is lossless, so a maximum-effort re-encode is the only lever; the lossless ` +
+        `re-encode is ${best} at ${at}, no smaller than the file already is, so PNG cannot ` +
+        `get this image under the ${allowed} ceiling. ${remedies}`
+      );
+    }
     return (
       `PNG is lossless, so a maximum-effort re-encode is the only lever; it produced ` +
       `${best} at ${at}, still over the ${allowed} ceiling. ${remedies}`
@@ -501,7 +516,10 @@ function lowered(remedies: string): string {
  */
 const REMEDIES: Record<ImageFormat, string> = {
   jpeg: 'Raise maxBytes, lower maxWidth or maxHeight, or allow webp for this glob.',
-  png: 'Raise maxBytes, lower maxWidth or maxHeight, or allow webp for this glob.',
+  // PNG names the format setting outright, and says what it costs, because the
+  // reason a file is PNG is usually its transparency: a user told to "allow
+  // webp" has to go and find out whether that throws the alpha away.
+  png: 'Raise maxBytes, lower maxWidth or maxHeight, or set format: webp for this glob, which keeps transparency.',
   webp: 'Raise maxBytes, or lower maxWidth or maxHeight.',
 };
 

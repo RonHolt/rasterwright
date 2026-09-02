@@ -24,6 +24,7 @@ export const FLAG_ORDER: readonly ReviewFlag[] = [
   'grew',
   'barely-shrank',
   'shrank-suspiciously',
+  'format-drop',
   'quality-only-drop',
   'dimensions-without-resize',
 ];
@@ -40,6 +41,7 @@ export const FLAG_LABELS: Record<ReviewFlag, string> = {
   grew: 'the output is larger than the input',
   'barely-shrank': 'a lossy re-encode that saved almost nothing',
   'shrank-suspiciously': 'a very large saving, worth confirming by eye',
+  'format-drop': 'a large saving from the format change; check the pixels',
   'quality-only-drop': 'a large saving from quality alone, with no resize',
   'dimensions-without-resize': 'the dimensions changed with no resize planned',
 };
@@ -90,8 +92,14 @@ export function classify(entry: ReviewEntry): ReviewFlag[] {
   if (savings !== undefined && entry.after !== undefined) {
     if (savings < 0) flags.add('grew');
     if (savings > SUSPICIOUS_SAVING) flags.add('shrank-suspiciously');
+    // A big saving with nothing resized has two quite different explanations,
+    // and naming the wrong one sends the reviewer looking for the wrong damage.
+    // Quality alone is a claim about the encoder's dial; a PNG that came out as
+    // a WebP got most of its saving from the format itself, and "quality alone,
+    // with no resize" would be false about a conversion that never turned a
+    // dial. Same threshold, same no-resize condition, different sentence.
     if (savings > QUALITY_ONLY_SAVING && !entry.applied.includes('resize')) {
-      flags.add('quality-only-drop');
+      flags.add(entry.after.format === entry.before.format ? 'quality-only-drop' : 'format-drop');
     }
     if (savings >= 0 && savings < NEGLIGIBLE_SAVING && encode?.lossyReencode === true) {
       flags.add('barely-shrank');

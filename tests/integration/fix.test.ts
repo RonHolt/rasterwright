@@ -261,7 +261,9 @@ describe('fix enforcing a byte budget', () => {
 
     const png = resultFor(report, 'assets/noisy.png');
     expect(png.reason).toMatch(/PNG is lossless/);
-    expect(png.reason).toMatch(/still over the 200 KB ceiling/);
+    expect(png.reason).toMatch(
+      /no smaller than the file already is, so PNG cannot get this image under the 200 KB ceiling/,
+    );
     expect(png.after).toBeUndefined();
     expect(hashTree(root).get('assets/noisy.png')).toBe(before.get('assets/noisy.png'));
   });

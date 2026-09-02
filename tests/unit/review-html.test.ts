@@ -115,6 +115,47 @@ describe('classify', () => {
     );
   });
 
+  it('calls a large saving on a converted file a format drop, not a quality one', () => {
+    // PNG to WebP is the ordinary case, and most of the saving is the format,
+    // not a quality dial: on the fixture corpus a 330 KB RGBA PNG lands at 8 KB
+    // as WebP. Saying "quality alone, with no resize" about that is wrong.
+    const converted = entry({
+      path: 'assets/hero.png',
+      outputPath: 'assets/hero.webp',
+      savingsPct: 97.4,
+      before: { bytes: 330_000, width: 480, height: 360, format: 'png' },
+      after: {
+        bytes: 8_600,
+        width: 480,
+        height: 360,
+        format: 'webp',
+        contentHash: 'd'.repeat(64),
+      },
+    });
+
+    const flags = classify(converted);
+    expect(flags).toContain('format-drop');
+    expect(flags).not.toContain('quality-only-drop');
+  });
+
+  it('keeps quality-only-drop for a saving with the format unchanged', () => {
+    const sameFormat = entry({
+      savingsPct: 71,
+      before: { bytes: 400_000, width: 2000, height: 1200, format: 'jpeg' },
+      after: {
+        bytes: 116_000,
+        width: 2000,
+        height: 1200,
+        format: 'jpeg',
+        contentHash: 'e'.repeat(64),
+      },
+    });
+
+    const flags = classify(sameFormat);
+    expect(flags).toContain('quality-only-drop');
+    expect(flags).not.toContain('format-drop');
+  });
+
   it('flags a lossy re-encode that bought nothing', () => {
     expect(classify(entry({ savingsPct: 1 }))).toContain('barely-shrank');
     expect(classify(entry({ savingsPct: 2 }))).not.toContain('barely-shrank');

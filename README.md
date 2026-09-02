@@ -831,9 +831,14 @@ budget is *why* this encode is planned, `ceiling` means it is a limit that also
 applies to a rewrite something else required.
 
 PNG gets an extra note. It is lossless, so the only lever is a maximum-effort
-re-encode worth a few percent; palette quantization is deliberately not in v0
-because it wrecks photographs. An arbitrary PNG byte budget may simply be
-unreachable, and the plan says so rather than implying success.
+re-encode with adaptive row filtering. On gradients and screenshots that can be
+worth a great deal - a 330 KB RGBA screenshot comes back at 142 KB, the same
+pixels - and on a photographic PNG it is worth almost nothing. It can even come
+back *larger* than a source that was optimized by a better tool, because this is
+one deflate pass and not a search. Palette quantization is deliberately not in
+v0 because it wrecks photographs. An arbitrary PNG byte budget may simply be
+unreachable, and the plan says so rather than implying success. Converting the
+glob to WebP is usually the real answer, and it keeps transparency.
 
 ### How a byte budget is actually met
 
@@ -1376,7 +1381,8 @@ URIs, and loads nothing from a CDN.
 | `grew` | The output is larger than the input. |
 | `barely-shrank` | A lossy re-encode that saved under 2%: quality spent for nothing. |
 | `shrank-suspiciously` | Over 95% smaller. Worth confirming with your eyes. |
-| `quality-only-drop` | Over 70% smaller with no resize behind it. |
+| `format-drop` | Over 70% smaller with no resize behind it, on a file that changed format. |
+| `quality-only-drop` | Over 70% smaller with no resize behind it and the same format. |
 | `dimensions-without-resize` | The dimensions moved with no resize planned. |
 
 ### Where the before images come from

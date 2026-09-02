@@ -111,6 +111,12 @@ queued. Decisions in `04` section 22 - see Human validation pending below.
   scales as probes x source size x concurrency, see `04` 19.7), and can miss a
   fitting quality on a non-monotone curve without ever writing over the ceiling
   (314 misses in 20,000 synthetic curves, no false failures, see `04` 19.3).
+- PNG re-encoding is one deflate pass, not an optimizer: with
+  `adaptiveFiltering` on it beats the source on gradient-heavy truecolour RGBA
+  (330 KB to 142 KB on the `screenshot.png` fixture) but it runs no
+  zopfli/oxipng-style search, so a lossless re-encode can still come back no
+  smaller than the file already is, and the refusal says which of the two
+  happened; WebP is roughly 10x smaller on the same files (see `04` 19.13).
 - The case-only rename is unreachable from the planner (`pathForFormat()`
   leaves the path alone once the extension matches the target format);
   `needsTwoStepRename`, `movingNameFor`, `recoverInterruptedMoves` defend a
