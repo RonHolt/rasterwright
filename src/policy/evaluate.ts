@@ -66,7 +66,7 @@ export function statusOf(findings: readonly Finding[]): FileStatus {
 }
 
 /**
- * Whether a future `fix` could resolve everything actionable on a file.
+ * Whether `fix` could resolve everything actionable on a file.
  *
  * Informational findings are excluded: there is nothing to fix about an image
  * simply having transparency. Otherwise pessimistic - a single unfixable

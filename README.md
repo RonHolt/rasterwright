@@ -53,21 +53,37 @@ current files into one static HTML page you open in a browser. Seeing the pixels
 is the point: a tool that reports "saved 61%" across 130 images has not told you
 whether any of them still look right.
 
-## Install (development)
+## Install
 
-There is no published package. Clone the repository and work from source.
+There is no published package. Clone the repository and install from it
+locally.
 
 ```bash
 git clone <this repo>
 cd rasterwright
 npm install
 npm test
-npm run build
 ```
 
-Requires Node.js 20 or newer.
+Requires Node.js 20 or newer. `npm install` runs the build, so `dist/` is
+present afterwards.
 
-Run it against a project:
+Install it into a project as a normal dependency, from a tarball:
+
+```bash
+# in the rasterwright checkout
+npm pack                      # writes rasterwright-0.1.0.tgz
+
+# in the project you want to govern
+npm install /path/to/rasterwright-0.1.0.tgz
+npx rasterwright init
+npx rasterwright check
+```
+
+`npm install /path/to/rasterwright` works too, and links the checkout instead
+of copying it, so edits in the checkout are live in the project.
+
+Or run it out of the checkout without installing anything:
 
 ```bash
 # from inside the project you want to check
@@ -79,8 +95,29 @@ node /path/to/rasterwright/dist/cli/index.js fix --dry-run --allow-renames
 npm run rasterwright -- check --config /path/to/project/.rasterwright.yml
 ```
 
-Both commands resolve the project root from wherever the config file lives, so
-the second form works from anywhere. Neither writes anything.
+Every command resolves the project root from wherever the config file lives, so
+the last form works from anywhere.
+
+## For coding agents
+
+The agent interface is the CLI, `--json`, and the skill shipped in
+`skills/rasterwright/`. There is no MCP server and no library API, by design:
+the CLI is a contract a shell can hold, and an integration is a thing to
+maintain.
+
+Install the skill for a coding agent that reads Agent Skills:
+
+```bash
+cp -r skills/rasterwright ~/.claude/skills/
+# or, from a project that installed the package
+cp -r node_modules/rasterwright/skills/rasterwright ~/.claude/skills/
+```
+
+The loop is three commands: `rasterwright check --json` to read the state,
+`rasterwright fix --dry-run --json` to read the plan, `rasterwright fix` to
+apply it, then `check` again to confirm. Exit codes are the contract: `0` clean,
+`1` findings that need attention, `2` nothing ran. With `--json`, stdout carries
+exactly one JSON document and every diagnostic goes to stderr.
 
 ## Configuration
 
@@ -123,7 +160,7 @@ rules:
 | `autoOrient` | Default `true`. Normalize a non-normal EXIF orientation flag. Set `false` and Rasterwright reports nothing about orientation. |
 | `colorSpace` | Only `srgb` is supported. |
 | `upscale` | Always `false`. Rasterwright never enlarges an image. |
-| `quality` | `{ start, floor }` for the future encoder. `start` is the **maximum** quality it will encode at, not a target; quality is only ever searched downward, and only when the byte ceiling is exceeded. |
+| `quality` | `{ start, floor }`, the band the encoder searches. Defaults are `start: 82` and `floor: 40`; both are integers from 1 to 100, and a `floor` above `start` is a config error. `start` is the **maximum** quality Rasterwright will encode at, not a target; quality is only ever searched downward, and only when the byte ceiling is exceeded. |
 
 ### Byte units are 1024-based
 
@@ -194,7 +231,7 @@ Every finding is an **error**, a **warning** or an **info** note.
 |---|---|---|
 | `error` | The repository contract is broken. | Yes |
 | `warning` | Worth fixing; the repo is not wrong. | No |
-| `info` | An observation that explains what a future `fix` would do. | No |
+| `info` | An observation that explains what `fix` would do. | No |
 
 The split exists because of the first run against a real theme: it found 3
 genuine constraint violations and 17 files carrying harmless EXIF. Treating
@@ -219,7 +256,7 @@ summarized, notes are hidden until you ask. `--json` stays exhaustive.
 | `metadata` | warning | EXIF, XMP, IPTC or other ancillary blocks are present while `stripMetadata` is on. |
 | `colorSpaceUnknown` | info | An ICC profile is present but could not be identified. |
 | `animated` | info | Animated image; v0 does not transform these. |
-| `ruleGlobExcludesTargetFormat` | info | Converting this file would take it out of every rule that governs it. |
+| `ruleGlobExcludesTargetFormat` | info | Converting this file would land it on a path no glob in the policy matches, so nothing would govern it afterwards. |
 
 ### Extension versus contents
 
@@ -259,8 +296,8 @@ used to determine colour-space status, not counted as clutter.
   `isOpaque` stay in `--json` on the image record, and transparency speaks up
   only where it changes an answer: a `format: jpeg` rule against an image with
   real alpha, which reports the `format` finding as unfixable. An unused alpha
-  channel is never a violation, and a future `fix` will not rewrite a file just
-  to drop one.
+  channel is never a violation, and `fix` does not rewrite a file just to drop
+  one.
 - **Metadata detection is honest.** Rasterwright reports what Sharp exposes -
   EXIF, XMP, IPTC, Photoshop tags, PNG text - and does not pretend to inventory
   every ancillary chunk.
@@ -271,7 +308,7 @@ used to determine colour-space status, not counted as clutter.
 
 ### Fixability
 
-Each finding, and each file, reports whether a future `fix` could resolve it:
+Each finding, and each file, reports whether `fix` could resolve it:
 
 - **yes** - a deterministic transform resolves it.
 - **no** - it cannot be resolved safely. The common case is a transparent image
@@ -575,6 +612,21 @@ not appear at all; they are only counted in `summary.ignored`.
 
 `rule` is the glob that supplied the value, or `(defaults)` for the defaults
 block, or `(built-in)` for checks with no config key.
+
+A file that could not be read or decoded carries an extra `error` key holding
+the decoder's message, and has no `image` and no `policy`. That is the JSON side
+of the `decode` check.
+
+```json
+{
+  "path": "assets/truncated.jpg",
+  "status": "error",
+  "matchedGlobs": ["assets/**/*.{jpg,jpeg,png,webp}"],
+  "findings": [{ "check": "decode", "severity": "error", "fixable": "no" }],
+  "fixable": "no",
+  "error": "Input buffer contains unsupported image format"
+}
+```
 
 This shape is not a stable public API yet.
 
@@ -1203,8 +1255,8 @@ parseable. On top of the plan fields:
   "dryRun": false,
   "permissions": { "allowRenames": true },
   "summary": {
-    "checked": 15, "fixed": 5, "unchanged": 8, "skipped": 2,
-    "blocked": 0, "failed": 0,
+    "checked": 15, "fixed": 5, "unchanged": 8, "unchangedWithWarnings": 2,
+    "skipped": 2, "blocked": 0, "failed": 0,
     "bytesBefore": 565248, "bytesAfter": 132096,  // over the files that changed
     "interrupted": false, "completed": 15, "ignored": 1
   },
@@ -1215,21 +1267,42 @@ parseable. On top of the plan fields:
       "status": "fixed",                // fixed | skipped | blocked | failed
       "applied": ["encode", "rename"],
       "before": { "bytes": 143565, "width": 600, "height": 400, "format": "jpeg" },
-      "after":  { "bytes": 41984,  "width": 600, "height": 400, "format": "webp" },
+      "after":  { "bytes": 41984,  "width": 600, "height": 400, "format": "webp",
+                  "contentHash": "9c2a..." },
+      "encode": { },                    // what the encoder did; see above
       "savingsPct": 70.7,
+      "beforeFile": "before/9c2a....jpg",  // the retained original, if one was kept
+      "reason": "...",                  // why it failed, was skipped or was blocked
       "warnings": [],                   // error-level findings still outstanding
       "needsAttention": false,
       "plan": { }                       // the plan, exactly as --dry-run reports it
     }
   ],
   "unrecovered": [],                    // images stranded under an interim name
+  "reviewRecorded": true,               // this run appended itself to the manifest
   "diagnostics": []
 }
 ```
 
-`needsAttention` is the single predicate the exit code reads. `unrecovered` is
+`beforeFile` is present only on a `fixed` result from a run that was keeping
+review data, and is relative to `.rasterwright/review/`. `reason` is present
+only on a result that failed, was skipped or was blocked. `reviewRecorded` is
+`false` under `--no-review` and `false` for a run that wrote no file at all,
+which is what keeps an idempotent second run from pruning away the run that
+actually changed something.
+
+`needsAttention` is what the exit code reads per file, but it is not the whole
+of it: the run exits `1` when `needsAttention` is set on any result, when
+`unrecovered` is non-empty, or when the run was interrupted. `unrecovered` is
 the one to watch: each entry is an image an interrupted rename left under an
 interim name that this run could not put back, and it is never deleted.
+
+A `fixed` result can still set `needsAttention`, which is why a successful run
+can exit `1`. It happens on a pixel-free rename: correcting `logo.png` to
+`logo.webp` touches nothing about a file that was also too wide, so
+verification lets those findings through into `warnings` rather than failing a
+write that was correct. The rename succeeded and the file is still not
+compliant, so the run says both.
 
 ### Result statuses
 
@@ -1367,7 +1440,7 @@ One model, every command. Warnings never produce a non-zero exit.
 | Code | `check` | `fix --dry-run` | `fix` |
 |---|---|---|---|
 | `0` | No error-level findings. | Every error is covered by a plan this run could execute (or there are none). | Nothing needs attention, and the run was not interrupted. |
-| `1` | At least one error. | At least one file is left unresolved: waiting on permission, blocked by a path conflict, unfixable, or unsupported. | A file failed, was skipped or was blocked; an image is stranded under an interim name; or the run was interrupted. |
+| `1` | At least one error. | At least one file is left unresolved: waiting on permission, blocked by a path conflict, unfixable, or unsupported. | A file failed, was skipped or was blocked; a file was fixed and still carries error-level findings the fix could not touch; an image is stranded under an interim name; or the run was interrupted. |
 | `2` | Configuration or runtime error. Nothing was checked. | Same. | Same, plus a refused precondition: outside a git repository without `--no-git`, or an unusable `--backup-dir`. Nothing was written. |
 
 `rasterwright review` and `rasterwright init` are not in that table on purpose:
@@ -1409,6 +1482,11 @@ execute", which is the useful thing to gate automation on.
 ## Options
 
 ```
+rasterwright [options] [command]
+
+  -V, --version        output the version number
+  -h, --help           display help for command
+
 rasterwright init [options]
 
   -c, --config <path>  where to write the config (default: .rasterwright.yml here)
@@ -1430,12 +1508,13 @@ rasterwright fix [options]
 
   -c, --config <path>  path to .rasterwright.yml (default: nearest one, searching upwards)
   --dry-run            report what fix would do, and write nothing
-  --allow-renames      permit operations that change a filename
+  --allow-renames      permit operations that change a filename (format conversion,
+                       extension correction)
   --json               emit machine-readable JSON on stdout instead of a report
   --no-gitignore       do not skip git-ignored files
   --no-git             run outside a git repository, accepting that overwrites cannot be undone
   --backup-dir <path>  copy every original into this directory before overwriting it
-  --no-review          do not keep before-copies or record the run for `review`
+  --no-review          do not keep before-copies or record this run for `rasterwright review`
   --concurrency <n>    number of images to process in parallel
 
 rasterwright review [options]
@@ -1445,6 +1524,9 @@ rasterwright review [options]
   --clean              delete .rasterwright/review/ and its retained originals
   --no-open            print the path to the page instead of opening a browser
 ```
+
+`-h, --help` also works on every subcommand, and both it and `-V, --version`
+exit `0`.
 
 Reach for `--dry-run` first. It is the same planning pass, printed instead of
 performed.
@@ -1465,9 +1547,6 @@ Clearly labelled as **not built**:
   and both would make the output dimensions or the output path depend on
   encoding results, which `fix --dry-run` promises they never do. The failure
   message names them as manual remedies instead.
-- `rasterwright init` - a starter config generated from what a repo already
-  contains. It is the one command that will write the `.rasterwright/` line into
-  your `.gitignore`; `fix` only ever suggests it.
 - **A contact sheet for agent vision.** One labelled before/after PNG a model
   can look at, rather than a page a person opens. Cheap to add and worth adding
   if agents start reviewing runs. See `04-v0-technical-plan.md` section 12.
@@ -1486,13 +1565,18 @@ server, a plugin system, accounts, telemetry, and a hosted anything.
 ## Development
 
 ```bash
-npm install          # install dependencies
+npm install          # install dependencies, then build (via the prepare script)
 npm test             # vitest, generates image fixtures automatically
 npm run typecheck    # tsc --noEmit over src, tests and scripts
 npm run build        # compile to dist/
 npm run fixtures     # regenerate fixtures/images and fixture projects
+npm pack             # build, then write rasterwright-0.1.0.tgz for a local install
 npm run rasterwright -- check --config <path>   # run from source
 ```
+
+The published tarball carries `dist/`, `skills/`, `README.md` and `LICENSE`, and
+no source maps. The package stays `private: true` so a stray `npm publish`
+cannot succeed; `npm pack` and `npm install <tarball>` both work regardless.
 
 ### Layout
 

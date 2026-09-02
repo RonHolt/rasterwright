@@ -4,6 +4,7 @@
   "description": "Image policy and verification tool for software projects",
   "type": "module",
   "license": "MIT",
+  "author": "Ron Holt",
   "private": true,
   "engines": {
     "node": ">=20"
@@ -12,9 +13,11 @@
     "rasterwright": "dist/cli/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ],
   "scripts": {
+    "prepare": "npm run build",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

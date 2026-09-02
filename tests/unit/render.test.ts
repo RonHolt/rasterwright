@@ -20,7 +20,7 @@ function finding(overrides: Partial<Finding> = {}): Finding {
     actual: 'EXIF',
     allowed: 'none',
     fixable: 'yes',
-    message: 'EXIF present; a future fix would remove it',
+    message: 'EXIF present; a fix would remove it',
     ...overrides,
   };
 }

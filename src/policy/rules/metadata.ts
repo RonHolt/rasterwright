@@ -39,7 +39,7 @@ export function checkMetadata(ctx: RuleContext): Finding[] {
       actual: present.join(', '),
       allowed: 'none',
       fixable: 'yes',
-      message: `${present.join(', ')} present; a future fix would remove it`,
+      message: `${present.join(', ')} present; a fix would remove it`,
     },
   ];
 }

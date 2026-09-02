@@ -6,7 +6,7 @@ import { type RuleContext, sourceOf } from './types.js';
  *
  * A non-normal orientation flag means the stored pixels and the displayed image
  * disagree, which every downstream tool then has to handle correctly - and many
- * do not. With `autoOrient: true` that is an error a future fix would normalize
+ * do not. With `autoOrient: true` that is an error a fix normalizes
  * by rotating the pixels and clearing the flag.
  *
  * With `autoOrient: false` Rasterwright leaves orientation alone entirely and

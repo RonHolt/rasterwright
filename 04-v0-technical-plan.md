@@ -1962,3 +1962,75 @@ writes nothing.
 `0` when a config was written, even one that already flags files: `init`
 succeeded at what it was asked to do, and the summary says how many. `2` when
 nothing was written. There is no `1`; `init` is not a gate.
+
+---
+
+## 22. Packaging decisions
+
+Added at the end of the packaging and agent-docs phase, which is the "only after
+step 11" work section 13 sequenced last: `--json` polish, a `SKILL.md`, and the
+packaging that makes both installable.
+
+### 22.1 `private: true` stays
+
+It blocks an accidental `npm publish` and interferes with nothing else. Both
+`npm pack` and `npm install <tarball>` work with it set, verified end to end
+against a disposable project. Removing it is a decision for whoever publishes,
+and that is the same moment to add `repository`, `homepage` and `bugs`.
+
+### 22.2 No `repository` field
+
+There is no remote. Any value would be a guess, and a wrong `repository` is
+worse than an absent one: npm renders it as a link, and `npm bugs` follows it.
+
+### 22.3 No source maps in the tarball
+
+`sourceMap: false` in `tsconfig.build.json` only. `tsconfig.json` keeps maps, so
+tests, `tsx` and the typecheck are unaffected.
+
+The maps were 48 files whose `sources` pointed at `../../src/*.ts`, and `src/`
+is not in the package. A map that resolves to nothing is worse than no map: a
+debugger steps into a file that does not exist. Shipping `src/` instead would
+fix the resolution and grow the tarball, for a CLI nobody debugs from inside
+`node_modules`. Dropping them took the unpacked size from 510 kB to 390 kB.
+
+### 22.4 `prepare` runs the build
+
+`files` lists `dist`, `dist/` is gitignored, and nothing rebuilt it on install.
+A fresh clone followed by `npm pack`, or an `npm install <git-url>`, therefore
+produced a package with no code in it and a `bin` entry pointing at a missing
+file. It was the one packaging defect that failed silently, and at the consumer
+rather than at pack time.
+
+`prepare` is the right hook rather than `prepack`: npm runs it on `npm install`
+in the checkout, on `npm pack`, and on an install from a git URL, which is every
+path that needs `dist/` to exist. It is not run when installing the published
+tarball, which already carries `dist/`.
+
+### 22.5 The skill lives in `skills/rasterwright/SKILL.md`
+
+Agent Skills are a directory per skill holding a `SKILL.md`, loaded from
+`~/.claude/skills/<name>/` or `.claude/skills/<name>/`. Shipping that directory
+shape means installing the skill is one `cp -r`, from the checkout or from
+`node_modules/rasterwright/skills/`. A bare `SKILL.md` at the repo root would
+need the user to create a directory and rename the file, and it would read as a
+skill for agents working *on* Rasterwright rather than *with* it.
+
+`skills` is added to `files` so the skill travels with the package. It is 7 kB.
+
+The skill is an experiment, not a contract: section 9 of `03` asks whether a
+`SKILL.md` changes agent behaviour enough to matter, and that question is still
+open. It documents `--json` field names, which `src/cli/render/json.ts` still
+says are not a stable public API, so the two have to be revised together.
+
+### 22.6 What was deliberately not added
+
+No `main` or `exports`. Rasterwright is a CLI, and an entry point would create a
+library API surface the project has not designed and does not want to support.
+
+No `keywords`. They matter only for registry search, which is not reachable
+while the package is private.
+
+No executable bit fixed in the build tree. `dist/cli/index.js` is mode `644`
+there, and npm sets the bit on `bin` targets at install time. Verified:
+`node_modules/.bin/rasterwright` is a correct relative symlink to a `755` file.

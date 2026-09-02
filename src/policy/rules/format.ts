@@ -15,12 +15,12 @@ import { FORMAT_LABEL, hasMeaningfulAlpha, info, type RuleContext, sourceOf } fr
  * Transparency itself produces no finding. `hasAlpha` and `isOpaque` are
  * properties of every PNG and WebP, not events; the first real project emitted
  * 55 notes that were almost entirely "this PNG has an alpha channel". They stay
- * in `ImageInfo` for `--json` and for future fix planning, and they surface
+ * in `ImageInfo` for `--json` and for fix planning, and they surface
  * here only when they change an answer, which is the `format: jpeg` case below.
  *
  * Format conversion also renames the file (`hero.png` -> `hero.webp`), which
- * can break references in source code. A future `fix` will require explicit
- * per-run authorization (`--allow-renames`) before renaming anything.
+ * can break references in source code, so `fix` requires explicit per-run
+ * authorization (`--allow-renames`) before renaming anything.
  */
 export function checkFormat(ctx: RuleContext): Finding[] {
   const { info: image, body, allGlobs } = ctx;

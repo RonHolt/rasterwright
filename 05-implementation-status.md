@@ -7,20 +7,30 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `3c73dbc feat: add starter config generation`
-  status`, plus uncommitted work implementing `init`.
+- HEAD: `a8d35ca docs: record init phase as complete in implementation status`,
+  plus uncommitted packaging and agent-docs work.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
   (`--verbose`, `--json`), `fix --dry-run` (`--json`, `--allow-renames`), `fix`
   (`--allow-renames`, `--json`, `--no-git`, `--backup-dir`, `--no-review`,
   `--concurrency`), and `review` (`--keep`, `--clean`, `--no-open`). Byte
   budgets are enforced.
-- Baseline: 798 tests across 25 files, `npm run typecheck` clean,
+- Baseline: 859 tests across 25 files, `npm run typecheck` clean,
   `npm run build` clean.
 - Sharp pinned exactly at `0.35.4`.
 - The vertical-slice loop from `04` section 11 is closed: check, fix, check
   again clean, fix again writing nothing, and a before/after page. `init` now
   closes the loop at the other end: a repository with no config gets one.
+- **Rasterwright installs as a package.** `npm pack` produces a 59-file,
+  123 kB tarball (390 kB unpacked): `dist/` with no source maps, `skills/`,
+  `README.md`, `LICENSE`, `package.json`. `npm install <tarball>` into a
+  disposable project was driven through `init`, `check`, `fix --dry-run`,
+  `fix`, `check`, `fix` again and `review --no-open`, with sharp's native
+  binary loading from the installed location. See `04` section 22.
+- `skills/rasterwright/SKILL.md` teaches a coding agent the CLI contract: the
+  check / dry-run / fix / check loop, the `--json` field names, what to do with
+  each result status, and the two things it must never do (edit the policy to
+  clear a finding, or write an ad-hoc sharp script for a governed image).
 
 ## Completed phases
 
@@ -34,15 +44,19 @@ behaviour in `README.md`; this file only records where the implementation is.
 | Execution wired (phase 2b) | `9e7195f` |
 | Byte-budget execution | `7460214`, `21f0b5a` |
 | `review` (before-copies, manifest, static page) | `dec36dd` |
-| `init` (scan, heuristic, templates, gitignore) | uncommitted |
+| `init` (scan, heuristic, templates, gitignore) | `3c73dbc` |
+| Packaging and agent-facing docs | uncommitted |
 
 ## Current phase
 
-**Packaging and agent-facing docs.** LICENSE file, `prepare` build,
-no source maps in the tarball, README accuracy pass against `--help`,
-`skills/rasterwright/SKILL.md` teaching coding agents the CLI contract,
-local tarball install verified in a disposable project. Status: not
-started.
+**Packaging and agent-facing docs. Done.** `LICENSE`, `prepare` running the
+build, no source maps in the tarball, `author`, `skills` in `files`, a README
+accuracy pass diffed against the real `--help` output, and
+`skills/rasterwright/SKILL.md`. A local tarball install was verified end to end
+in a disposable git project. Decisions in `04` section 22.
+
+Nothing here is committed. The v0 roadmap is complete; what remains is the human
+validation below.
 
 ## Non-negotiable invariants
 
@@ -86,7 +100,7 @@ started.
 
 ## Recent decisions (not already in 04)
 
-- None beyond `04` sections 15, 16, 17, 18, 19, 20 and 21.
+- None beyond `04` sections 15, 16, 17, 18, 19, 20, 21 and 22.
 
 ## Known limitations
 
@@ -243,7 +257,7 @@ started.
 6. `review` (done): static HTML, before-copies, exceptions first
 7. `init` (done): scan, grouping heuristic, ladders, closure, templates,
    `.gitignore` handling
-8. Agent-facing docs (SKILL.md), packaging polish (current) (current)
+8. Agent-facing docs (SKILL.md), packaging polish (done)
 
 ## Human validation pending
 
@@ -257,6 +271,12 @@ started.
   Nothing in this session touched that checkout. A human should run
   `fix --dry-run` there first, read the plan, and only then run `fix` on a
   clean git working tree.
+- **Does the skill change what an agent does?** `03` section 9 asks it directly
+  and the answer is still unknown. `skills/rasterwright/SKILL.md` exists and
+  reads correctly, but nobody has watched an agent work an image task with it
+  installed and compared that against the same task without it. It also names
+  `--json` fields that `src/cli/render/json.ts` still calls unstable, so the two
+  have to move together.
 - **The review page under a human eye.** It has now been driven headlessly - the
   page loads with no console errors, all thirteen images resolve, and the
   overlay, zoom dialog, per-pane buttons, filters and `/` shortcut all behave -

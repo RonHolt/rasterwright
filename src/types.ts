@@ -170,7 +170,7 @@ export type CheckName =
  * `hasAlpha` and `isOpaque` are ordinary properties of PNG and WebP files, not
  * events: emitting a finding for each one produced 55 notes on the first real
  * project, almost all of them saying "this PNG has an alpha channel". They stay
- * on `ImageInfo` - available in `--json` and to future fix planning - and are
+ * on `ImageInfo` - available in `--json` and to fix planning - and are
  * reported only where they change an answer, which today is a `format: jpeg`
  * rule against an image with real alpha. That surfaces as the `format` finding
  * being unfixable, with transparency named as the reason.
@@ -181,7 +181,7 @@ export type CheckName =
  *
  * - `error`   - the repository contract is broken. Fails the run (exit 1).
  * - `warning` - worth fixing, does not make the repo wrong. Never fails the run.
- * - `info`    - an observation that explains what a future `fix` would do.
+ * - `info`    - an observation that explains what `fix` would do.
  *
  * The split exists because the first real run against a production theme found
  * three genuine constraint violations and seventeen files carrying harmless
@@ -190,7 +190,7 @@ export type CheckName =
 export type Severity = 'error' | 'warning' | 'info';
 
 /**
- * Whether a future `fix` could resolve a finding.
+ * Whether `fix` could resolve a finding.
  *
  * - `yes`     - a deterministic transform resolves it.
  * - `no`      - it cannot be resolved safely (e.g. JPEG cannot hold transparency).
@@ -721,7 +721,12 @@ export interface FixReport {
   summary: FixSummary;
   /** Path collisions batch preflight found. Every one corresponds to a `blocked` result. */
   conflicts: PlanSetConflict[];
-  /** Every governed file, `unchanged` ones included. */
+  /**
+   * Every file that is not `unchanged`. Unchanged files are counted in the
+   * summary and omitted here, for the same reason `FixPlanReport.files` omits
+   * them: repeating what `check --json` already says would bury the files the
+   * run actually touched.
+   */
   results: FixResult[];
   /**
    * Absolute paths of images an interrupted rename left under an interim name,
