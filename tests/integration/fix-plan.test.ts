@@ -61,7 +61,7 @@ describe('exit codes', () => {
     const root = copyProject('maxheight');
     const result = await runCli(['fix', '--dry-run'], root);
     expect(result.code).toBe(0);
-    expect(result.stdout).toMatch(/resize\s+200x1400 -> 85x600/);
+    expect(result.stdout).toMatch(/resize\s+200x1400 -> 86x600/);
   });
 
   it('exits 0 on a clean project with nothing to plan', async () => {

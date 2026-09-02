@@ -712,7 +712,7 @@ encoded once, and renamed once. Operations are emitted in execution order:
 | # | Operation | Notes |
 |---|---|---|
 | 1 | `autoOrient` | First: it changes the dimensions everything downstream depends on. |
-| 2 | `resize` | Down only, `fit: inside`, both dimensions rounded **down** so the result can never land a pixel over a limit. |
+| 2 | `resize` | Down only, `fit: inside` against the limits themselves. The dimensions the plan names are the dimensions the file gets, rounded to nearest, and neither can land over a limit. |
 | 3 | `toColorSpace` | After geometry, before the encoder. Only for a confident non-sRGB error. |
 | 4 | `encode` | Exactly one per file. Metadata stripping is an encoder setting, not a second pass. |
 | 5 | `rename` | Last, so no output has to be reopened under a new name. |

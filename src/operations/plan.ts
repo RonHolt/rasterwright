@@ -331,10 +331,23 @@ function exceeds(image: ImageInfo, limits: RuleBody): boolean {
 /**
  * Downscale to fit inside the policy's limits.
  *
- * Both dimensions are floored. Rounding up, or rounding to nearest, can put the
- * output a pixel over `maxWidth`, which would make `fix` non-idempotent: the
- * second run would find the same violation and resize again. Losing at most one
- * pixel is the cheap side of that trade.
+ * `to` is a *prediction*, not an instruction. The pipeline hands libvips the
+ * policy's own limits and `fit: 'inside'` and lets it derive the output, so the
+ * rounding here has to be the rounding libvips does or the dry run states
+ * dimensions the file never gets. It rounds to nearest, half up, which
+ * reproduced sharp 0.35.4 exactly on 220 random source/limit pairs.
+ *
+ * Rounding to nearest cannot put the output over a limit, which is what the
+ * flooring this replaced was defending against. The axis the ratio came from
+ * lands on its limit exactly. The other one is strictly below a limit that is
+ * itself an integer, so rounding it up can at most reach that integer.
+ *
+ * Flooring both axes was wrong for a subtler reason than being a pixel short:
+ * it was applied to a box that was then handed to `fit: 'inside'`, which
+ * derives its own scale from whatever box it is given. A floored box is a
+ * slightly different shape from the source, so libvips shrank the other axis
+ * again to fit it - 2399x938 under `maxWidth: 1600` was planned as 1600x625
+ * and written as 1598x625.
  */
 function resize(image: ImageInfo, body: RuleBody): ResizeOperation {
   const ratio = Math.min(
@@ -347,8 +360,8 @@ function resize(image: ImageInfo, body: RuleBody): ResizeOperation {
     op: 'resize',
     from: { width: image.width, height: image.height },
     to: {
-      width: Math.max(1, Math.floor(image.width * ratio)),
-      height: Math.max(1, Math.floor(image.height * ratio)),
+      width: Math.max(1, Math.round(image.width * ratio)),
+      height: Math.max(1, Math.round(image.height * ratio)),
     },
     fit: 'inside',
     upscale: false,

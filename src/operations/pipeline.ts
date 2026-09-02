@@ -254,14 +254,26 @@ function buildChain(source: Buffer, plan: FilePlan, encode: EncodeOperation, ima
 }
 
 /**
- * The dimensions to hand the resizer.
+ * The box to hand the resizer.
+ *
+ * This is the policy's own limits, not `resize.to`. `fit: 'inside'` derives its
+ * own scale from whatever box it is given, so handing it the planner's computed
+ * target - a box already rounded to integers, and therefore a slightly
+ * different shape from the source - makes it shrink the image a second time to
+ * fit that shape. 2399x938 under `maxWidth: 1600` was planned as 1600x625 and
+ * came out 1598x625. The limits are the shape `fit: 'inside'` is meant to be
+ * given, and `resize.to` is the planner's prediction of what comes back.
+ *
+ * The source's own dimension stands in for a limit the policy does not set,
+ * which is the same thing the planner does when it works out the ratio.
+ * `withoutEnlargement` keeps a limit larger than the source from growing it.
  *
  * The planner works in *displayed* dimensions, because that is what a browser
  * lays out and therefore what `maxWidth` governs. Sharp resizes the pixels as
  * they are stored. Those agree except in one case: a file whose orientation
  * flag rotates it a quarter turn and which is not being auto-oriented, where
  * the stored image is the displayed one with its axes swapped. Passing the
- * displayed target straight through there would fit the *long* stored edge into
+ * displayed limits straight through there would fit the *long* stored edge into
  * the short limit and shrink the image far more than the policy asked for.
  */
 function resizeTarget(
@@ -269,10 +281,10 @@ function resizeTarget(
   encode: EncodeOperation,
   image: ImageInfo,
 ): { width: number; height: number } {
+  const width = resize.maxWidth ?? image.width;
+  const height = resize.maxHeight ?? image.height;
   const swapped = encode.preservesOrientation && QUARTER_TURN.has(image.orientation);
-  return swapped
-    ? { width: resize.to.height, height: resize.to.width }
-    : { width: resize.to.width, height: resize.to.height };
+  return swapped ? { width: height, height: width } : { width, height };
 }
 
 /** EXIF orientations whose stored and displayed axes are swapped. */

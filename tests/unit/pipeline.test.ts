@@ -122,24 +122,54 @@ describe('resize', () => {
 
   it('honours a height limit', async () => {
     const { output } = await render('tall.png', fixture('tall.png'), { maxHeight: 600 });
-    expect(output.width).toBe(85);
+    expect(output.width).toBe(86);
     expect(output.height).toBeLessThanOrEqual(600);
   });
 
-  it('can land under the planned target, never over it', async () => {
-    // The planner floors width and height independently from one ratio, so the
-    // pair it names is not always exactly the source's aspect ratio. `fit:
-    // 'inside'` keeps the aspect ratio exactly and honours the tighter of the
-    // two, which can come out a few pixels short. Short is compliant and stays
-    // compliant; over would make the next run resize the file again.
+  it('lands exactly on the dimensions the plan named', async () => {
+    // The dry run publishes `resize.to`, so it has to be what the file gets.
+    // 200x1400 under `maxHeight: 600` scales to 85.71 wide, and libvips rounds
+    // that to 86; a planner that floored it to 85 would both name a size the
+    // file never has and, by handing that flatter box to `fit: 'inside'`, make
+    // libvips shrink the image a second time to fit it.
     const { plan, output } = await render('tall.png', fixture('tall.png'), { maxHeight: 600 });
 
     const resize = plan.operations.find((operation) => operation.op === 'resize');
-    expect(resize?.to).toEqual({ width: 85, height: 600 });
-    expect(output.width).toBeLessThanOrEqual(resize?.to.width ?? 0);
-    expect(output.height).toBeLessThanOrEqual(resize?.to.height ?? 0);
-    // The source's aspect ratio is preserved rather than the planner's rounding.
+    expect(resize?.to).toEqual({ width: 86, height: 600 });
+    expect([output.width, output.height]).toEqual([86, 600]);
+    // The source's aspect ratio is preserved, and neither limit is exceeded.
     expect(output.width / output.height).toBeCloseTo(200 / 1400, 3);
+  });
+
+  it('names the dimensions the file gets, over a spread of limits and shapes', async () => {
+    // The dry run's claim is that it states what will happen, so `resize.to`
+    // and the bytes on disk have to agree for every shape, not just the ones
+    // whose ratio divides evenly. This is the regression guard for the planner
+    // naming 1600x625 and writing 1598x625.
+    const shapes: [string, RuleBody][] = [
+      ['oversized.jpg', { maxWidth: 777 }],
+      ['oversized.jpg', { maxWidth: 999 }],
+      ['oversized.jpg', { maxWidth: 1333 }],
+      ['oversized.jpg', { maxWidth: 137 }],
+      ['oversized.jpg', { maxHeight: 301 }],
+      ['oversized.jpg', { maxWidth: 640, maxHeight: 480 }],
+      ['tall.png', { maxHeight: 600 }],
+      ['tall.png', { maxHeight: 333 }],
+      ['tall.png', { maxWidth: 111 }],
+      ['tall.png', { maxWidth: 90, maxHeight: 700 }],
+    ];
+
+    for (const [name, body] of shapes) {
+      const { plan, output } = await render(name, fixture(name), body);
+      const resize = plan.operations.find((operation) => operation.op === 'resize');
+      expect(resize, `${name} under ${JSON.stringify(body)} planned no resize`).toBeDefined();
+      expect([output.width, output.height], `${name} under ${JSON.stringify(body)}`).toEqual([
+        resize?.to.width,
+        resize?.to.height,
+      ]);
+      if (body.maxWidth !== undefined) expect(output.width).toBeLessThanOrEqual(body.maxWidth);
+      if (body.maxHeight !== undefined) expect(output.height).toBeLessThanOrEqual(body.maxHeight);
+    }
   });
 
   it('leaves a resized file compliant, so the next run has nothing to do', async () => {

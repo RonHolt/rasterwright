@@ -669,7 +669,7 @@ describe('the git precondition', () => {
     expect(result.code).toBe(0);
     expect(result.stderr).toMatch(/--no-git was given, so these overwrites cannot be undone/);
     const tall = await inspect(root, 'assets/tall.png');
-    expect(tall.ok && tall.info.height).toBe(595);
+    expect(tall.ok && tall.info.height).toBe(600);
   });
 
   it('warns about a file with uncommitted changes without refusing it', async () => {
@@ -866,7 +866,7 @@ describe('crash recovery', () => {
     expect(rerun.stderr).toMatch(/a stale temp file left by an earlier run/);
     expect(residue(root)).toEqual([]);
     const tall = await inspect(root, 'assets/tall.png');
-    expect(tall.ok && tall.info.height).toBe(595);
+    expect(tall.ok && tall.info.height).toBe(600);
   });
 });
 
