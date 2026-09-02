@@ -183,11 +183,30 @@ describe('anchor selection', () => {
     expect(globs(paths)).toEqual([`x/a/**/${GROUP}`, `x/b/**/${GROUP}`, `y/**/${GROUP}`]);
   });
 
-  it('collapses to one broad rule when a roll-up reaches the project root', () => {
+  it('keeps the top-level anchors when a roll-up has nowhere left to go', () => {
+    // Four directories directly under the root, each a real group. There is no
+    // parent to generalize into, and the broad rule this used to produce
+    // described none of them: on a real theme it put 117-pixel icons and
+    // 6600-pixel photographs under one ceiling.
     const paths = [...filesIn('a', 3), ...filesIn('b', 3), ...filesIn('c', 3), ...filesIn('d', 3)];
     const anchors = anchorsFor(paths);
+    expect(anchors.map((anchor) => globFor(anchor, GROUP))).toEqual([
+      `a/**/${GROUP}`,
+      `b/**/${GROUP}`,
+      `c/**/${GROUP}`,
+      `d/**/${GROUP}`,
+    ]);
+    expect(anchors.every((anchor) => anchor.files.length === 3)).toBe(true);
+  });
+
+  it('collapses to one broad rule when every anchor was too small to keep', () => {
+    // Step 3 had to waive the minimum to avoid dropping everything, so these
+    // anchors hold one file each. Four rules derived from one image apiece is
+    // what MIN_GROUP exists to prevent; one broad rule is the better answer.
+    const paths = ['a/f0.jpg', 'b/f0.jpg', 'c/f0.jpg', 'd/f0.jpg'];
+    const anchors = anchorsFor(paths);
     expect(anchors.map((anchor) => globFor(anchor, GROUP))).toEqual([`**/${GROUP}`]);
-    expect(anchors[0]?.files).toHaveLength(12);
+    expect(anchors[0]?.files).toHaveLength(4);
   });
 
   it('is deterministic regardless of the order paths arrive in', () => {

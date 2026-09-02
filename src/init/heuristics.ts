@@ -207,10 +207,25 @@ export function roundUpBytes(value: number): ByteRung {
  *   2. let a recursive anchor absorb everything beneath it
  *   3. drop anchors holding fewer than three images, unless that leaves none
  *   4. while more than three remain, roll the deepest one up to its parent
- *   5. a roll-up that reaches the project root collapses to one broad rule
+ *   5. stop when nothing can be rolled up any further
  *
  * Deterministic: ties in step 4 are broken by taking the lexicographically last
  * directory, so the same corpus always produces the same globs.
+ *
+ * Step 5 is a stop, not a surrender. Once every surviving anchor sits directly
+ * under the project root there is no parent left to generalize into, and the
+ * only thing a further roll-up could produce is the one broad `**` rule. On a
+ * corpus with four top-level image directories that rule is actively wrong:
+ * a theme holding 117-pixel icons in `assets/` and 6600-pixel photographs in
+ * `images/` gets a single ceiling that is meaningless for the first and
+ * unreachable for the second, where four rules describe it exactly. So the cap
+ * is a preference that generalization tries to honour, not a promise the
+ * anchors are bent to keep.
+ *
+ * The exception is a corpus so thin that step 3 had to keep undersized anchors
+ * to avoid dropping them all. Rules derived from one or two files each are
+ * precisely what `MIN_GROUP` exists to prevent, and there the broad rule really
+ * is the better description.
  */
 export function anchorsFor(paths: readonly string[]): Anchor[] {
   if (paths.length === 0) return [];
@@ -230,7 +245,8 @@ export function anchorsFor(paths: readonly string[]): Anchor[] {
   }));
 
   anchors = absorb(anchors);
-  anchors = dropSmall(anchors);
+  const dropped = dropSmall(anchors);
+  anchors = dropped.anchors;
 
   // Each roll-up strictly reduces the depth of one anchor, so this terminates;
   // the guard is there so a future edit to the loop body cannot hang a CLI.
@@ -239,7 +255,12 @@ export function anchorsFor(paths: readonly string[]): Anchor[] {
 
     const deepest = pickDeepest(anchors);
     const parent = dirnameOf(deepest.dir);
-    if (deepest.dir === '' || parent === '') return [broadAnchor(paths)];
+    // Nothing above a top-level directory but the root itself. Keep the
+    // anchors we have, unless they are the undersized ones step 3 could not
+    // afford to drop.
+    if (deepest.dir === '' || parent === '') {
+      return dropped.undersized ? [broadAnchor(paths)] : sortAnchors(anchors);
+    }
 
     deepest.dir = parent;
     deepest.recursive = true;
@@ -278,9 +299,14 @@ function covers(host: Anchor, other: Anchor): boolean {
   return other.dir.startsWith(`${host.dir}/`);
 }
 
-function dropSmall(anchors: Anchor[]): Anchor[] {
+/**
+ * Step 3. `undersized` records that the filter had to be waived because every
+ * anchor was below `MIN_GROUP`, which is what tells step 5 the surviving
+ * anchors are too thin to be worth keeping over one broad rule.
+ */
+function dropSmall(anchors: Anchor[]): { anchors: Anchor[]; undersized: boolean } {
   const survivors = anchors.filter((anchor) => anchor.files.length >= MIN_GROUP);
-  return survivors.length > 0 ? survivors : anchors;
+  return survivors.length > 0 ? { anchors: survivors, undersized: false } : { anchors, undersized: true };
 }
 
 function pickDeepest(anchors: Anchor[]): Anchor {
