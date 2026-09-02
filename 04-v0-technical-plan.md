@@ -1735,3 +1735,230 @@ this.
 space-joined string: the after pane of a renamed file lives at a different path,
 and a path can contain a space, which makes splitting a joined attribute back
 apart wrong in two independent ways.
+
+---
+
+## 21. Decisions from implementing `init`
+
+Added 2026-09-01, on top of a `check`, `fix` and `review` that already worked
+against a real project. That order is what makes this section short: the schema
+had already been proven in use, so `init` had a target to generate rather than a
+format to invent.
+
+### 21.1 Module layout
+
+```
+src/init/scan.ts        the read-only discovery and inspection pass
+src/init/heuristics.ts  pure: paths + ImageInfo -> ProposedRule[]
+src/init/template.ts    pure: ProposedRule[] -> the text of a config
+src/init/gitignore.ts   the check-ignore probe and the append
+src/run-init.ts         the pipeline. Writes nothing.
+src/cli/init.ts         the only writer in the command
+src/cli/render/init.ts  pure: the stderr summary
+```
+
+The `run-init` / `cli/init` split mirrors `run-check` / `cli/check` and earns
+the same thing: the whole heuristic can be tested against real image corpora
+without a test ever risking a write, and the integration test that asserts the
+tree is untouched has something meaningful to assert about.
+
+`scan.ts` reuses `discover` and `inspect` unchanged. Neither needs a policy:
+`discover` takes a root, and the extension list lives in `SUPPORTED_EXTENSIONS`
+rather than in a config. That is the whole reason a config-less command can
+share the read path with a config-driven one.
+
+### 21.2 The heuristic
+
+**Grouping.** Directory anchors, in five steps:
+
+1. Group by POSIX dirname. Root-level images anchor non-recursively
+   (`*.{jpg,jpeg,png,webp}`); every other anchor is `<dir>/**/*.{...}`. One
+   stray screenshot beside `package.json` must not produce a rule governing the
+   whole tree.
+2. A recursive anchor absorbs every anchor at or beneath it.
+3. Anchors holding fewer than three images are dropped, unless that would leave
+   none. Three files is the smallest group a percentile can say anything about.
+4. While more than three anchors remain, the deepest is rolled up into its
+   parent and absorption runs again. Ties in depth are broken by taking the
+   lexicographically last directory, so the result is deterministic.
+5. A roll-up that reaches the project root collapses to one broad
+   `**/*.{...}` rule rather than producing a recursive root anchor that would
+   contradict the non-recursive one from step 1.
+
+**Numbers.** `maxWidth` is the 90th percentile of *displayed* widths (so EXIF
+orientation is already applied) and `maxBytes` the 95th percentile of file
+sizes, each rounded up a fixed ladder:
+
+| Ladder | Rungs |
+|---|---|
+| width | 640, 800, 1000, 1200, 1600, 2000, 2400, 3000, 4000 |
+| bytes | 50kb, 100kb, 150kb, 200kb, 300kb, 500kb, 750kb, 1mb, 1.5mb, 2mb, 3mb, 5mb |
+
+Percentiles are nearest-rank (sort ascending, take index `ceil(p/100 * n) - 1`),
+so every number in a provenance comment is a value that actually exists in the
+repository. A value above the top rung stops at the top rung; 4000 pixels and
+5mb are already generous ceilings for a web image, and the summary says how many
+files a topped-out ladder flags.
+
+Bytes get the looser percentile because an image corpus is usually bimodal: many
+small icons plus a few photographs. p90 on bytes lands between the humps. On the
+real theme corpus, p90/p90 at a 10% target produced a config flagging seven
+files; p90/p95 at 5% produced three, which are the same three the hand-written
+config flags.
+
+**Closure.** The candidate policy is built in memory, run through
+`createResolver` and the real `evaluate`, and each rule then climbs its ladder
+until at most `max(3, 5%)` of the images it governs are over a limit. At most
+eight steps, and it stops when both ladders top out.
+
+Only `maxWidth`, `maxHeight` and `maxBytes` findings drive the loop. An
+extension that disagrees with its contents, or a stray EXIF block, is a real
+finding no ceiling can move, and reacting to one would loosen the policy for a
+reason unrelated to size - and, on a corpus where every file has one, would
+climb to the top rung for no reason at all.
+
+A consequence worth writing down: because nearest-rank p95 leaves at most 5% of
+a group above it and the tolerance is 5%, a freshly proposed **byte** limit is
+already inside tolerance. The byte branch of the bump is reached only when the
+width ladder has topped out. That is the intended shape rather than dead code -
+the byte percentile is deliberately the looser of the two - but it means the
+loop in practice moves `maxWidth`.
+
+### 21.3 A generated glob has to match the files it was generated from
+
+Three separate ways that fails, all of them silent, and all of them producing a
+config that looks authoritative while governing nothing.
+
+**Directory names are not glob-safe.** A directory really can be called
+`img (old)` or `[drafts]`, and interpolating one into a pattern hands picomatch
+syntax instead of a name. Every character picomatch reads as syntax
+(`\ * ? [ ] { } ( ) ! + @ | ,`) is backslash-escaped before interpolation.
+Escaping is unconditional rather than clever: `!` is only special leading and
+`+`/`@` only before a parenthesis, but a backslash in front of any of them is
+always the literal character. Only the directory is escaped; the `**` and the
+extension group are syntax we wrote ourselves.
+
+**Backslashes and YAML.** Escaping puts backslashes in the glob, and a directory
+can also just be called `a\b`. Inside a double-quoted YAML scalar those are
+escape sequences, so the loader would receive a different pattern than the one
+generated, silently, and only for the directories least likely to be tested.
+Globs are therefore emitted as single-quoted scalars with `'` doubled, where the
+only special character is the quote itself.
+
+**Case.** Discovery matches extensions case-insensitively, so `hero.JPG` is
+found and measured; rule matching is case-sensitive everywhere except Windows.
+A group of four lowercase spellings would therefore measure that file and then
+report it as ungoverned. The extension group carries every spelling the scan
+actually saw, so a corpus with `x1.JPG` in it gets `*.{jpg,jpeg,png,webp,JPG}`
+and an ordinary corpus keeps the short, readable group.
+
+The group is computed once for the whole scan rather than per anchor, so every
+rule in a file ends the same way.
+
+`globFor(anchor, group)` takes the group as a required parameter with no
+default, because `anchors.map(globFor)` would otherwise pass the array index as
+the group and produce nonsense. That is not hypothetical; it is what the first
+version of the tests did.
+
+### 21.4 Verification uses the real evaluator, and says so
+
+`init` prints the exact number of errors and warnings `check` will report. It is
+free once the files are inspected, and it is the only thing that stops the very
+next command from being a surprise. It is exact rather than estimated because it
+is the same `evaluate` over the same `ImageInfo`, plus one decode error per
+*governed* unreadable file, which is precisely how `run-check` counts them.
+
+Verified against the Bokka theme: `init` predicted 5 errors and 24 warnings, and
+a real `check` against the generated config reported 5 and 24.
+
+### 21.5 Never `format`, never `maxHeight`
+
+A generated `format` rule renames files, needs `--allow-renames` to execute, is
+unsafe over transparency, and is a policy judgement a heuristic has no standing
+to make on someone's behalf. `maxHeight` is omitted for a smaller reason: it
+duplicates what `maxWidth` already governs on almost every corpus, and two
+limits where one will do makes the file harder to read.
+
+Both appear as commented examples beside the numbers they would sit next to, and
+the `defaults` block is written out explicitly with the built-in values, so the
+generated file teaches what exists rather than hiding it.
+
+### 21.6 The text is validated before it is written, not after
+
+`loadConfigFile` was split into `parseConfigText(text, label)` plus a read.
+`init` validates through that exact function before touching the filesystem. The
+alternative - write, then load, then apologise - leaves a config the loader
+rejects sitting in the user's repository, and a second parallel validator would
+drift from the thing it validates.
+
+### 21.7 `.gitignore`: append, and let git decide
+
+Section 9 already assigned the job to `init`. Three conditions, all required:
+the command is `init`; `git rev-parse --is-inside-work-tree` succeeds; and
+`git check-ignore -q .rasterwright/` says it is *not* already ignored.
+
+Delegating to `check-ignore` rather than searching the file for a string gets
+nested `.gitignore` files, negations, `.git/info/exclude` and global excludes
+right for free, and makes a second `init` a no-op for the right reason. An
+answer of "git could not say" is treated as "leave it alone": editing a
+version-controlled file on a guess is worse than not editing it.
+
+The append is newline-safe in both directions - a file not ending in a newline
+gets one first, then a blank line, then the comment and the entry - and the file
+is created when absent.
+
+It also reuses the file's dominant line ending, so a CRLF `.gitignore` stays
+CRLF. Two LF lines at the bottom of a CRLF file is a whole-file change in some
+editors and a visible `^M` mismatch in others, which is a gratuitous edit in a
+file Rasterwright is already touching more than it would like to. LF is the
+default for a new file and for anything not already mostly CRLF.
+
+A failure to append is reported and does not fail the run. The config is already
+on disk at that point, and exiting 2, which means "nothing was written", would
+be false about a run that wrote the file it was asked for.
+
+### 21.8 Flag naming
+
+`--keep-gitignore` opts out of the append. Deliberately not `--no-gitignore`:
+that already means "do not skip git-ignored files" on `check` and `fix`, and
+`init` keeps that flag with that same meaning for its own scan. `--skip-gitignore`
+is worse than either, since it reads as "skip git-ignored files".
+
+### 21.9 Refusals
+
+`init` refuses to overwrite an existing config without `--force`, using the
+`wx` open flag so the answer comes from the filesystem at the moment of the
+write rather than from an `existsSync` a moment earlier.
+
+The other spelling of the default name is directional, because `findConfig`
+tries `.rasterwright.yml` first and `.rasterwright.yaml` second:
+
+| Writing | Beside an existing | Result |
+|---|---|---|
+| `.rasterwright.yaml` | `.rasterwright.yml` | refused: nothing would ever read the new file |
+| `.rasterwright.yml` | `.rasterwright.yaml` | written, with a note that the new file takes precedence |
+| a `--config` name | either default | written, with a note naming what bare commands will load |
+
+Only the first is a refusal, and only because the file would be dead on
+arrival. Under `--force` it is written anyway, with the note saying plainly that
+nothing will read it.
+
+A target directory that does not exist is a refusal, not a `mkdir`. `init`
+writes one file.
+
+### 21.10 `--config` sets the root, so "scan here, write there" is not expressible
+
+The directory holding the config is the project root, for `init` exactly as for
+every other command, because the globs it writes are relative to that directory.
+`init --config /tmp/x.yml` therefore scans `/tmp`, not the current directory.
+That is correct - the alternative generates a config whose globs are wrong the
+moment it is loaded - but it does mean there is no way to generate a config for
+a project without writing into that project. Driving `runInit` directly is the
+answer for a read-only trial run, and it is one of the reasons that function
+writes nothing.
+
+### 21.11 Exit codes
+
+`0` when a config was written, even one that already flags files: `init`
+succeeded at what it was asked to do, and the summary says how many. `2` when
+nothing was written. There is no `1`; `init` is not a gate.

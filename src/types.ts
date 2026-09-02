@@ -6,7 +6,8 @@
  *   policy -> analysis -> operation plan -> execution -> verification
  *
  * Every stage of that exists: `policy/` evaluates, `operations/plan.ts` plans,
- * and `operations/` executes and verifies. Only `review` and `init` are unbuilt.
+ * and `operations/` executes and verifies. `review` renders what a run changed,
+ * and `init` generates the policy the whole pipeline reads.
  *
  * Everything here is plain data. `policy/` is pure functions over it, which is
  * what makes `check` provably read-only.

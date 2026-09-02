@@ -7,18 +7,20 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `dec36dd feat: add visual fix review`
-  status`, plus uncommitted work implementing `review`.
-- Implemented commands: `check` (`--verbose`, `--json`), `fix --dry-run`
-  (`--json`, `--allow-renames`), `fix` (`--allow-renames`, `--json`,
-  `--no-git`, `--backup-dir`, `--no-review`, `--concurrency`), and `review`
-  (`--keep`, `--clean`, `--no-open`). Byte budgets are enforced.
-- Not implemented: `init`.
-- Baseline: 703 tests across 22 files, `npm run typecheck` clean,
+- HEAD: `4b5c711 docs: record review phase as complete in implementation
+  status`, plus uncommitted work implementing `init`.
+- **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
+  `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
+  (`--verbose`, `--json`), `fix --dry-run` (`--json`, `--allow-renames`), `fix`
+  (`--allow-renames`, `--json`, `--no-git`, `--backup-dir`, `--no-review`,
+  `--concurrency`), and `review` (`--keep`, `--clean`, `--no-open`). Byte
+  budgets are enforced.
+- Baseline: 798 tests across 25 files, `npm run typecheck` clean,
   `npm run build` clean.
 - Sharp pinned exactly at `0.35.4`.
 - The vertical-slice loop from `04` section 11 is closed: check, fix, check
-  again clean, fix again writing nothing, and a before/after page.
+  again clean, fix again writing nothing, and a before/after page. `init` now
+  closes the loop at the other end: a repository with no config gets one.
 
 ## Completed phases
 
@@ -31,15 +33,30 @@ behaviour in `README.md`; this file only records where the implementation is.
 | Execution foundation, unwired (phase 2a) | `3c3076e` |
 | Execution wired (phase 2b) | `9e7195f` |
 | Byte-budget execution | `7460214`, `21f0b5a` |
-| `review` (before-copies, manifest, static page) | uncommitted |
+| `review` (before-copies, manifest, static page) | `dec36dd` |
+| `init` (scan, heuristic, templates, gitignore) | uncommitted |
 
 ## Current phase
 
-**`rasterwright init`.** Starter config from a read-only scan: group
-images by directory, conservative maxWidth/maxBytes from percentiles
-rounded up a ladder, closure loop so few files fail, `--bare` template,
-refuse to overwrite without `--force`, append `.rasterwright/` to
-`.gitignore` in a git repo unless opted out. Status: not started.
+**`rasterwright init`. Complete, uncommitted.** A starter config from a
+read-only scan: images grouped by directory into at most three anchors,
+`maxWidth` from p90 of displayed widths and `maxBytes` from p95 of file sizes,
+each rounded up a fixed ladder, then a closure loop driven by the real evaluator
+that loosens each rule until at most `max(3, 5%)` of its images are over a
+limit. `--bare` writes the commented template with no scan; a repository with no
+images falls back to it. Refuses to overwrite without `--force`. Appends
+`.rasterwright/` to `.gitignore` inside a git work tree unless
+`--keep-gitignore`. Never emits `format` or `maxHeight`. See `04` section 21.
+
+Validated against `~/bokka-theme-env/wp-content/themes/bokka-theme` read-only:
+76 images scanned (78 skipped by `.gitignore`), one rule on
+`assets/src/images/**`, `maxWidth: 2000`, `maxBytes: 300kb`, three files over
+those limits. `init` predicted 5 errors and 24 warnings and a real `check`
+against the generated config reported 5 and 24. Nothing in that checkout was
+written; `git status` was identical before and after.
+
+Next phase: agent-facing docs (`SKILL.md`) and packaging polish, per the
+roadmap below.
 
 ## Non-negotiable invariants
 
@@ -71,12 +88,44 @@ refuse to overwrite without `--force`, append `.rasterwright/` to
   before-copy. A run records itself only when it actually wrote a file.
 - Rasterwright never edits `.gitignore` outside `init`. `fix` suggests a line
   and nothing more.
+- `init` writes exactly one file it was asked for, plus `.gitignore` in a git
+  work tree. No directories, no `.rasterwright/`. `run-init.ts` writes nothing
+  at all; `cli/init.ts` is the only writer in that command.
+- A generated config is validated through the real loader *before* it is
+  written, never after.
+- `init` never emits `format` or `maxHeight`.
+- A generated glob escapes picomatch syntax in directory names, is written as a
+  single-quoted YAML scalar so the escaping survives, and carries every
+  extension spelling the scan saw. See `04` 21.3.
 
 ## Recent decisions (not already in 04)
 
-- None beyond `04` sections 15, 16, 17, 18, 19 and 20.
+- None beyond `04` sections 15, 16, 17, 18, 19, 20 and 21.
 
 ## Known limitations
+
+- **`init --config` sets the project root, so "scan here, write there" cannot be
+  expressed.** The directory holding a config is the project root, because the
+  globs `init` writes are relative to it, so `init --config /tmp/x.yml` scans
+  `/tmp`. Correct, and it means a read-only trial run against a repository you
+  must not write to has to call `runInit` directly rather than the CLI.
+- **The byte ladder almost never moves.** Nearest-rank p95 leaves at most 5% of
+  a group above it and the closure tolerance is 5%, so a freshly proposed byte
+  limit starts inside tolerance; the byte branch of the bump is reached only
+  after the width ladder tops out. Intended rather than dead, but worth knowing
+  before someone "fixes" it. See `04` 21.2.
+- **A group of fewer than three images is left ungoverned.** Counted and
+  reported, and named in a comment in the generated config, but not covered by a
+  rule. Three files is the smallest group a percentile can say anything about.
+- **`init` inspects every discovered image, governed or not**, because it cannot
+  know what will be governed until it has seen them all. On an icon-heavy PNG
+  tree that means Sharp's `stats()` decodes most of the corpus. Measured at 1.1
+  seconds for 76 images on the real theme, so this is a note rather than a
+  problem.
+- **A generated config describes the repository, not an intention.** The header
+  comment says so, and the numbers come from a ladder rather than from the
+  measurements directly, but a config that arrived by scan still looks as
+  authoritative as one somebody thought about.
 
 - **A byte budget is met by quality alone.** There is no extra downscale and no
   format fallback: the plan fixes the dimensions and the output format before
@@ -206,11 +255,18 @@ refuse to overwrite without `--force`, append `.rasterwright/` to
    explicit failure.
 5. Idempotence hardening tests (done, folded into the phases above)
 6. `review` (done): static HTML, before-copies, exceptions first
-7. `init` (current) (current)
-8. Agent-facing docs (SKILL.md), packaging polish
+7. `init` (done): scan, grouping heuristic, ladders, closure, templates,
+   `.gitignore` handling
+8. Agent-facing docs (SKILL.md), packaging polish (current)
 
 ## Human validation pending
 
+- **Is a generated config one a human would keep?** `init` has been run against
+  the real theme and produced limits that match what a human wrote by hand
+  independently, which is strong evidence for the ladders. What nobody has done
+  is generate a config in an unfamiliar repository and judge whether the file
+  reads as a starting point worth editing. That is a taste question, not a
+  correctness one.
 - Real `fix` execution against `~/bokka-theme-env/wp-content/themes/bokka-theme`.
   Nothing in this session touched that checkout. A human should run
   `fix --dry-run` there first, read the plan, and only then run `fix` on a

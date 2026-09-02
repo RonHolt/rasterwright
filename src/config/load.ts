@@ -37,6 +37,36 @@ export function findConfig(startDir: string): string | undefined {
   }
 }
 
+/**
+ * Parse and validate config text that need not be on disk.
+ *
+ * Split out of `loadConfigFile` so `init` can validate the file it is about to
+ * write through this exact code path, before writing it. Validating after the
+ * write would mean a generated config the loader rejects still lands in the
+ * user's repository, and validating through a second, parallel parser would
+ * mean the check drifts from the thing it is checking.
+ *
+ * @param label - what to name the source in errors: a path, or `<generated>`.
+ */
+export function parseConfigText(text: string, label: string): Policy {
+  let raw: unknown;
+  try {
+    raw = parseYaml(text);
+  } catch (error) {
+    const detail = error instanceof YAMLParseError ? error.message : (error as Error).message;
+    throw new ConfigError(`${label} is not valid YAML: ${detail}`);
+  }
+
+  try {
+    return parsePolicy(raw);
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      throw new ConfigError(`${label}: ${error.message}`, error.hint);
+    }
+    throw error;
+  }
+}
+
 /** Parse and validate a config file. The project root is the file's directory. */
 export function loadConfigFile(configPath: string): LoadedConfig {
   const absolute = path.resolve(configPath);
@@ -48,22 +78,7 @@ export function loadConfigFile(configPath: string): LoadedConfig {
     throw new ConfigError(`could not read ${absolute}: ${(error as Error).message}`);
   }
 
-  let raw: unknown;
-  try {
-    raw = parseYaml(text);
-  } catch (error) {
-    const detail = error instanceof YAMLParseError ? error.message : (error as Error).message;
-    throw new ConfigError(`${absolute} is not valid YAML: ${detail}`);
-  }
-
-  try {
-    return { configPath: absolute, root: path.dirname(absolute), policy: parsePolicy(raw) };
-  } catch (error) {
-    if (error instanceof ConfigError) {
-      throw new ConfigError(`${absolute}: ${error.message}`, error.hint);
-    }
-    throw error;
-  }
+  return { configPath: absolute, root: path.dirname(absolute), policy: parseConfigText(text, absolute) };
 }
 
 /**

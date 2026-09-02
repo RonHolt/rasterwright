@@ -18,6 +18,16 @@ export interface DiscoveryResult {
   gitignoreApplied: boolean;
   /** Why gitignore filtering was skipped, when it was. */
   gitignoreSkippedReason?: string;
+  /**
+   * How many candidate images the `.gitignore` filter removed. Always zero when
+   * the filter did not run.
+   *
+   * `check` has no use for this - a file it never looked at is not a finding -
+   * but `init` does: "scanned 76 images" is a different statement about a
+   * repository than "scanned 76 of 154 images", and the user is about to commit
+   * a config generated from whichever population was actually measured.
+   */
+  ignoredCount: number;
 }
 
 export interface DiscoverOptions {
@@ -59,10 +69,15 @@ export function discover(root: string, options: DiscoverOptions = {}): Discovery
   found.sort();
 
   if (options.noGitignore) {
-    return { files: found, gitignoreApplied: false, gitignoreSkippedReason: '--no-gitignore was passed' };
+    return {
+      files: found,
+      gitignoreApplied: false,
+      gitignoreSkippedReason: '--no-gitignore was passed',
+      ignoredCount: 0,
+    };
   }
   if (found.length === 0) {
-    return { files: found, gitignoreApplied: false, gitignoreSkippedReason: 'nothing to filter' };
+    return { files: found, gitignoreApplied: false, gitignoreSkippedReason: 'nothing to filter', ignoredCount: 0 };
   }
 
   const ignored = gitIgnoredPaths(root, found);
@@ -71,10 +86,12 @@ export function discover(root: string, options: DiscoverOptions = {}): Discovery
       files: found,
       gitignoreApplied: false,
       gitignoreSkippedReason: 'not a git work tree, or git is unavailable',
+      ignoredCount: 0,
     };
   }
 
-  return { files: found.filter((file) => !ignored.has(file)), gitignoreApplied: true };
+  const kept = found.filter((file) => !ignored.has(file));
+  return { files: kept, gitignoreApplied: true, ignoredCount: found.length - kept.length };
 }
 
 /**

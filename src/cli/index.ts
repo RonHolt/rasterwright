@@ -3,6 +3,7 @@ import { Command } from 'commander';
 
 import { checkCommand } from './check.js';
 import { fixCommand } from './fix.js';
+import { initCommand } from './init.js';
 import { reviewCommand } from './review.js';
 import { readVersion } from './version.js';
 import { EXIT_CLEAN, EXIT_ERROR, RasterwrightError } from '../utils/errors.js';
@@ -44,6 +45,27 @@ program
   .name('rasterwright')
   .description('Image policy and verification tool for software projects')
   .version(readVersion());
+
+program
+  .command('init')
+  .description('Write a starter .rasterwright.yml, with limits measured from the images already here.')
+  .allowExcessArguments(false)
+  .option('-c, --config <path>', 'where to write the config (default: .rasterwright.yml here)')
+  .option('--bare', 'write the commented template without scanning anything')
+  .option('-f, --force', 'overwrite an existing config')
+  .option('--keep-gitignore', 'do not add .rasterwright/ to .gitignore')
+  .option('--no-gitignore', 'do not skip git-ignored files while scanning')
+  .option('--concurrency <n>', 'number of images to inspect in parallel', parseConcurrency)
+  .action(async (options: {
+    config?: string;
+    bare?: boolean;
+    force?: boolean;
+    keepGitignore?: boolean;
+    gitignore?: boolean;
+    concurrency?: number;
+  }) => {
+    process.exitCode = await initCommand({ cwd: process.cwd(), ...options }, streams);
+  });
 
 program
   .command('check')
@@ -120,9 +142,10 @@ program
     process.exitCode = await reviewCommand({ cwd: process.cwd(), ...options }, streams);
   });
 
-// `init` is deliberately absent. `check` and `fix --dry-run` still write nothing
-// at all; only plain `fix` writes, and only after its preconditions have passed.
-// `review` writes its own page and nothing else in the project.
+// `check` and `fix --dry-run` still write nothing at all; only plain `fix`
+// writes, and only after its preconditions have passed. `review` writes its own
+// page and nothing else in the project, and `init` writes the config it was
+// asked for plus, in a git repository, one appended block in `.gitignore`.
 
 /**
  * Commander's own failures exit through Rasterwright's codes, not its default.
