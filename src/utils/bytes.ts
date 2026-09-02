@@ -83,8 +83,13 @@ export function parseBytes(value: unknown, where: string): number {
   return bytes;
 }
 
-/** Human display of a byte count, using the same 1024 basis `parseBytes` accepts. */
-export function formatBytes(bytes: number): string {
+/**
+ * Human display of a byte count, using the same 1024 basis `parseBytes` accepts.
+ *
+ * `decimals` overrides the default precision. It exists for `formatBytesPair`
+ * and is not something a caller printing one number should reach for.
+ */
+export function formatBytes(bytes: number, decimals?: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
   let value = bytes / 1024;
@@ -93,6 +98,37 @@ export function formatBytes(bytes: number): string {
     value /= 1024;
     unit += 1;
   }
-  const decimals = value < 10 ? 1 : 0;
-  return `${value.toFixed(decimals)} ${units[unit]}`;
+  const places = decimals ?? (value < 10 ? 1 : 0);
+  return `${value.toFixed(places)} ${units[unit]}`;
+}
+
+/**
+ * Two byte counts that appear in one sentence, at a precision that keeps them
+ * apart.
+ *
+ * A ceiling and the size that missed it are close together by construction -
+ * the search stops at the first size over the line - so the default precision
+ * routinely lands both on the same string. "cannot reach 14 KB without
+ * dropping below quality 40 (best: 14 KB at quality 40)" reads as a bug in
+ * Rasterwright rather than a fact about the image, which is exactly the kind
+ * of failure message that trains someone to stop reading them. Found on a
+ * 13.6 KB ceiling missed by 322 bytes.
+ *
+ * Precision widens until the two differ, and falls back to exact bytes, which
+ * always do unless the numbers are genuinely equal.
+ */
+export function formatBytesPair(
+  allowed: number,
+  actual: number,
+): { allowed: string; actual: string } {
+  const wide = formatBytes(allowed);
+  const narrow = formatBytes(actual);
+  if (wide !== narrow) return { allowed: wide, actual: narrow };
+
+  for (let places = 1; places <= 3; places += 1) {
+    const a = formatBytes(allowed, places);
+    const b = formatBytes(actual, places);
+    if (a !== b) return { allowed: a, actual: b };
+  }
+  return { allowed: `${allowed} B`, actual: `${actual} B` };
 }

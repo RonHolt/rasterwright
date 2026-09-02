@@ -8,7 +8,7 @@ import { EXTENSION_FORMATS } from '../policy/rules/extension.js';
 import { hasMeaningfulAlpha } from '../policy/rules/types.js';
 import { evaluate } from '../policy/evaluate.js';
 import { inspectBuffer } from '../scanner/inspect.js';
-import { formatBytes } from '../utils/bytes.js';
+import { formatBytes, formatBytesPair } from '../utils/bytes.js';
 import { sha256 } from '../utils/hash.js';
 import { toAbsolute } from '../utils/paths.js';
 import type { PathSemantics } from './plan-set.js';
@@ -457,10 +457,17 @@ function refusalFor(
     return blocking.map((finding) => finding.message).join('; ');
   }
 
-  const allowed =
-    typeof ceiling.allowed === 'number' ? formatBytes(ceiling.allowed) : `${ceiling.allowed}`;
+  // Both numbers in one sentence, so they are formatted as a pair: at the
+  // default precision a ceiling and the size that just missed it often print
+  // identically, and a message that says it could not reach 14 KB because the
+  // best it managed was 14 KB reads as a bug. See `formatBytesPair`.
+  const sizes =
+    typeof ceiling.allowed === 'number'
+      ? formatBytesPair(ceiling.allowed, rendered.bytes)
+      : { allowed: `${ceiling.allowed}`, actual: formatBytes(rendered.bytes) };
+  const allowed = sizes.allowed;
   const at = `${candidate.width}x${candidate.height}`;
-  const best = formatBytes(rendered.bytes);
+  const best = sizes.actual;
   const remedies = REMEDIES[rendered.format];
 
   if (rendered.quality === undefined) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatBytes, parseBytes } from '../../src/utils/bytes.js';
+import { formatBytes, formatBytesPair, parseBytes } from '../../src/utils/bytes.js';
 import { ConfigError } from '../../src/utils/errors.js';
 
 describe('parseBytes', () => {
@@ -55,5 +55,24 @@ describe('formatBytes', () => {
   it('round-trips through parseBytes', () => {
     expect(parseBytes(formatBytes(512_000).replace(' ', ''), 'x')).toBe(512_000);
     expect(parseBytes(formatBytes(1_048_576).replace(' ', ''), 'x')).toBe(1_048_576);
+  });
+});
+
+describe('formatBytesPair', () => {
+  it('leaves counts alone when the default precision already tells them apart', () => {
+    expect(formatBytesPair(15_360, 84_000)).toEqual({ allowed: '15 KB', actual: '82 KB' });
+  });
+
+  it('widens precision when a ceiling and the size that missed it collide', () => {
+    // The real case: a 13.6 KB ceiling missed by 322 bytes, where both counts
+    // print as "14 KB" and the failure message reads as a contradiction.
+    expect(formatBytesPair(13_926, 14_248)).toEqual({ allowed: '13.6 KB', actual: '13.9 KB' });
+  });
+
+  it('falls back to exact bytes when even three decimals collide', () => {
+    expect(formatBytesPair(1_048_576, 1_048_577)).toEqual({
+      allowed: '1048576 B',
+      actual: '1048577 B',
+    });
   });
 });
