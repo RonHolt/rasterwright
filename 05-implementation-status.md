@@ -1,36 +1,31 @@
 # Rasterwright Implementation Status
 
-**Purpose:** durable current-state record for future sessions. Read this
-right after `CLAUDE.md`. It is rewritten at the end of each phase, not
-appended to. Product scope lives in `03`, architecture in `04`, user-facing
-behaviour in `README.md`; this file only records where the implementation is.
+**Purpose:** durable current-state record for future sessions. Read this right
+after `CLAUDE.md`. It is rewritten at the end of each phase, not appended to.
+Product scope lives in `03`, architecture in `04`, user-facing behaviour in
+`README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `a8d35ca docs: record init phase as complete in implementation status`,
-  plus uncommitted packaging and agent-docs work.
+- HEAD: `c39f2eb test: close the audit findings before human validation`
+  contract`, which is the packaging and agent-docs work.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
   (`--verbose`, `--json`), `fix --dry-run` (`--json`, `--allow-renames`), `fix`
   (`--allow-renames`, `--json`, `--no-git`, `--backup-dir`, `--no-review`,
-  `--concurrency`), and `review` (`--keep`, `--clean`, `--no-open`). Byte
-  budgets are enforced.
-- Baseline: 859 tests across 25 files, `npm run typecheck` clean,
-  `npm run build` clean.
-- Sharp pinned exactly at `0.35.4`.
-- The vertical-slice loop from `04` section 11 is closed: check, fix, check
-  again clean, fix again writing nothing, and a before/after page. `init` now
-  closes the loop at the other end: a repository with no config gets one.
-- **Rasterwright installs as a package.** `npm pack` produces a 59-file,
-  123 kB tarball (390 kB unpacked): `dist/` with no source maps, `skills/`,
-  `README.md`, `LICENSE`, `package.json`. `npm install <tarball>` into a
-  disposable project was driven through `init`, `check`, `fix --dry-run`,
-  `fix`, `check`, `fix` again and `review --no-open`, with sharp's native
-  binary loading from the installed location. See `04` section 22.
-- `skills/rasterwright/SKILL.md` teaches a coding agent the CLI contract: the
-  check / dry-run / fix / check loop, the `--json` field names, what to do with
-  each result status, and the two things it must never do (edit the policy to
-  clear a finding, or write an ad-hoc sharp script for a governed image).
+  `--concurrency`), `review` (`--keep`, `--clean`, `--no-open`). Byte budgets
+  enforced. Baseline: 875 tests across 25 files, typecheck and build clean.
+  Sharp pinned exactly at `0.35.4`. The vertical-slice loop (`04` section 11)
+  is closed: check, fix, check clean, fix again writing nothing, before/after
+  page; `init` closes the other end by generating a config where none exists.
+- **Installs as a package and ships an agent skill.** `npm pack`: 59 files, 123
+  kB tarball (390 kB unpacked) - `dist/` (no source maps), `skills/`,
+  `README.md`, `LICENSE`, `package.json`. Verified via `npm install <tarball>`
+  through the full init/check/fix/review loop; sharp's native binary loads from
+  the installed location. See `04` section 22. `skills/rasterwright/SKILL.md`
+  teaches an agent the CLI contract: the check/dry-run/fix/check loop, `--json`
+  field names, and the two things never to do (edit the policy to clear a
+  finding, or hand-roll a sharp script for a governed image).
 
 ## Completed phases
 
@@ -40,246 +35,166 @@ behaviour in `README.md`; this file only records where the implementation is.
 | Severity + real-world check refinements | `b3b312b`, `75dbc63` |
 | Read-only `fix --dry-run` (pure planner) | `2860c4e` |
 | Batch plan preflight (`blocked` status, collisions fixture) | `7974008` |
-| Execution foundation, unwired (phase 2a) | `3c3076e` |
-| Execution wired (phase 2b) | `9e7195f` |
+| Execution foundation + wiring (phases 2a/2b) | `3c3076e`, `9e7195f` |
 | Byte-budget execution | `7460214`, `21f0b5a` |
 | `review` (before-copies, manifest, static page) | `dec36dd` |
 | `init` (scan, heuristic, templates, gitignore) | `3c73dbc` |
-| Packaging and agent-facing docs | uncommitted |
+| Packaging and agent-facing docs | `c39f2eb` |
 
 ## Current phase
 
-**Packaging and agent-facing docs. Done.** `LICENSE`, `prepare` running the
-build, no source maps in the tarball, `author`, `skills` in `files`, a README
-accuracy pass diffed against the real `--help` output, and
-`skills/rasterwright/SKILL.md`. A local tarball install was verified end to end
-in a disposable git project. Decisions in `04` section 22.
-
-Nothing here is committed. The v0 roadmap is complete; what remains is the human
-validation below.
+**The v0 roadmap is complete; next is human validation.** `c39f2eb` was the
+last phase (see Completed phases above); no further implementation phase is
+queued. Decisions in `04` section 22 - see Human validation pending below.
 
 ## Non-negotiable invariants
 
-- `check` and `fix --dry-run` write nothing: no bytes, mtimes, names,
-  config, cache, `.rasterwright/`. Integration tests snapshot the tree.
-- A refused `fix` writes nothing either. Preconditions run before the startup
-  sweep, which is itself a write.
-- `planFile()` is pure, deterministic, file-local: no Sharp, no fs.
-- One file, one coherent plan, exactly one `encode`. Operation order:
-  autoOrient, resize, toColorSpace, encode, rename.
-- Idempotence: second `fix` run writes zero files. The file's current state
-  is the only source of truth. No hidden provenance metadata in images.
-- Original stays byte-for-byte untouched until a candidate has been
-  generated, inspected and verified against policy. Explicit failure over
-  degraded output. No best-effort PNG, no palette quantization, no flatten
-  without explicit policy.
-- Failure is per file. A file either fully succeeds or is left exactly as it
-  was, so there is no partial state and no rollback machinery. That includes a
-  before-copy that cannot be written: the file fails and the original stands.
-- Preflight refuses conservatively: it never picks a winner between two plans
-  claiming one path, and never orders renames so a chain can thread itself.
-- Any filename change requires `--allow-renames` per run. Not a config key.
-  Without it the whole file is blocked, never partially fixed.
-- `maxBytes` is a ceiling, not a target. Dry-run never predicts a size.
-- Metadata (EXIF/XMP/IPTC/text) is a warning, stripped only during a rewrite
-  an error already required. ICC is colour management, not metadata.
-- `kb` = 1024 bytes. Rules shallow-merge, later matching rule wins per key.
-- A second, idempotent `fix` leaves `.rasterwright/` byte-identical and adds no
-  before-copy. A run records itself only when it actually wrote a file.
-- Rasterwright never edits `.gitignore` outside `init`. `fix` suggests a line
-  and nothing more.
-- `init` writes exactly one file it was asked for, plus `.gitignore` in a git
-  work tree. No directories, no `.rasterwright/`. `run-init.ts` writes nothing
-  at all; `cli/init.ts` is the only writer in that command.
-- A generated config is validated through the real loader *before* it is
-  written, never after.
-- `init` never emits `format` or `maxHeight`.
-- A generated glob escapes picomatch syntax in directory names, is written as a
-  single-quoted YAML scalar so the escaping survives, and carries every
-  extension spelling the scan saw. See `04` 21.3.
+- `check` and `fix --dry-run` write nothing: no bytes, mtimes, names, config,
+  cache, `.rasterwright/` (integration tests snapshot the tree); a refused
+  `fix` writes nothing either, since preconditions run before the startup
+  sweep, itself a write.
+- `planFile()` is pure, deterministic, file-local (no Sharp, no fs): one file,
+  one coherent plan, exactly one `encode`, in order autoOrient, resize,
+  toColorSpace, encode, rename. Idempotence: a second `fix` writes zero files
+  and leaves `.rasterwright/` byte-identical, adding no before-copy - a run
+  records itself only when it actually wrote a file, and the file's current
+  state is the only source of truth, with no hidden provenance metadata in
+  images.
+- Original stays byte-for-byte untouched until a candidate is generated,
+  inspected and verified against policy - explicit failure over degraded output
+  (no best-effort PNG, no palette quantization, no flatten without explicit
+  policy). Failure is per file: full success or left exactly as it was, no
+  partial state and no rollback machinery, including a before-copy that can't
+  be written, where the file fails and the original stands.
+- Preflight refuses conservatively: never picks a winner between two plans
+  claiming one path, never orders renames so a chain can thread itself. Any
+  filename change requires `--allow-renames` per run, not a config key; without
+  it the whole file is blocked, never partially fixed.
+- `maxBytes` is a ceiling, not a target (dry-run never predicts a size); `kb` =
+  1024 bytes; rules shallow-merge, later matching rule wins per key. Metadata
+  (EXIF/XMP/IPTC/text) is a warning, stripped only during a rewrite an error
+  already required; ICC is colour management, not metadata.
+- Rasterwright never edits `.gitignore` outside `init` (`fix` only suggests a
+  line). `init` writes exactly one file it was asked for, plus `.gitignore` in
+  a git work tree - no directories, no `.rasterwright/`. `run-init.ts` writes
+  nothing; `cli/init.ts` is the only writer. A generated config is validated
+  through the real loader *before* it is written, never after; `init` never
+  emits `format` or `maxHeight`, and a generated glob escapes picomatch syntax
+  in directory names, is written as a single-quoted YAML scalar, and carries
+  every extension spelling the scan saw. See `04` 21.3.
 
 ## Recent decisions (not already in 04)
 
-- None beyond `04` sections 15, 16, 17, 18, 19, 20, 21 and 22.
+- None beyond `04` sections 15-22.
 
 ## Known limitations
 
-- **`init --config` sets the project root, so "scan here, write there" cannot be
-  expressed.** The directory holding a config is the project root, because the
-  globs `init` writes are relative to it, so `init --config /tmp/x.yml` scans
-  `/tmp`. Correct, and it means a read-only trial run against a repository you
-  must not write to has to call `runInit` directly rather than the CLI.
-- **The byte ladder almost never moves.** Nearest-rank p95 leaves at most 5% of
-  a group above it and the closure tolerance is 5%, so a freshly proposed byte
-  limit starts inside tolerance; the byte branch of the bump is reached only
-  after the width ladder tops out. Intended rather than dead, but worth knowing
-  before someone "fixes" it. See `04` 21.2.
-- **A group of fewer than three images is left ungoverned.** Counted and
-  reported, and named in a comment in the generated config, but not covered by a
-  rule. Three files is the smallest group a percentile can say anything about.
-- **`init` inspects every discovered image, governed or not**, because it cannot
-  know what will be governed until it has seen them all. On an icon-heavy PNG
-  tree that means Sharp's `stats()` decodes most of the corpus. Measured at 1.1
-  seconds for 76 images on the real theme, so this is a note rather than a
-  problem.
-- **A generated config describes the repository, not an intention.** The header
-  comment says so, and the numbers come from a ladder rather than from the
-  measurements directly, but a config that arrived by scan still looks as
-  authoritative as one somebody thought about.
-
-- **A byte budget is met by quality alone.** There is no extra downscale and no
-  format fallback: the plan fixes the dimensions and the output format before
-  any encoding starts, and both would make those depend on encoder results. A
-  ceiling the quality floor cannot reach is an explicit failure naming the three
-  manual remedies. See `04` 19.8.
-- **A ceiling applies to every encode under its rule, not only budget-driven
-  ones.** A file being rewritten for some other reason under a rule that sets
-  `maxBytes` is also searched when the start quality overshoots, so it can land
-  at a lower quality and a smaller size than it did before this phase. Intended,
-  and a real change in output bytes. See `04` 19.11.
-- **The search costs a full decode per probe.** libvips re-decodes the source on
-  every `toBuffer()`. Measured at roughly 185 ms per probe on the worst fixture,
-  so about 1.1 s for a six-probe search. Decoding once to raw pixels would be
-  faster and would change the ICC handling path, so it is deliberately not done.
-  See `04` 19.7.
-- **A conversion is judged where it lands.** The `maxBytes` and `quality` the
-  encode uses come from the rule governing the *output* path, because that is
-  the rule verification applies. The source rule still decides `format`,
-  `colorSpace`, `stripMetadata` and `autoOrient`; size limits take the tighter
-  of the two. A limit only the destination imposes rides along with a rewrite
-  and never causes one, so a pixel-free rename stays pixel-free. A target path
-  matching no rule has no ceiling. See `04` 19.12.
-- **The search can miss a fitting quality on a non-monotone size curve**, and in
-  the worst case report a failure where one existed. It can never write bytes
-  over the ceiling. Measured over 20,000 synthetic curves: 314 missed optima, no
-  false failures, no over-ceiling writes. See `04` 19.3.
-- **Each probe copies the source buffer.** Sharp's `clone()` runs
-  `structuredClone` over its options, which for buffer input duplicates the
-  whole source: 457 KB per clone on `overbudget.jpg`. One clone is live at a
-  time, so peak memory is bounded, but churn scales as probes x source size x
-  concurrency. See `04` 19.7.
-- The case-only rename is unreachable from the planner today.
-  `pathForFormat()` leaves the path alone when the current extension already
-  denotes the target format (`plan.ts:283`), so `a.JPG` under `format: jpeg`
-  never becomes `a.jpg`, and no policy produces a case-only target.
-  `needsTwoStepRename`, `movingNameFor` and `recoverInterruptedMoves` are
-  therefore defence for a planner that has not been written yet: keep their
-  unit tests, keep calling recovery at startup, and do not spend an afternoon
-  trying to build an integration fixture for it.
-- A rename-only plan re-inspects the source bytes to evaluate them under the
-  target path. That is a second decode of a file nothing is re-encoding.
-  Correct, and cheap enough not to have optimized.
-- **Path semantics come from `process.platform`, not from the mounted
-  filesystem.** `defaultPathSemantics()` calls macOS and Windows
-  case-insensitive and everything else case-sensitive. A case-sensitive volume
-  on macOS, or a case-insensitive one mounted on Linux, is therefore judged
-  wrong. The error only ever refuses a batch that would have worked, or takes
-  the two-step rename route where a direct one would do, so it is safe in the
-  direction it fails - but probing the filesystem would be the honest answer.
-- **A symlinked image is invisible.** Discovery does not follow symlinks, so a
-  link under a governed glob is counted as "matched no rule and was skipped"
-  rather than as a link, and nothing is ever written through one. That is the
-  safe behaviour and the wrong label: the summary line says the file is
-  ungoverned when the truth is that Rasterwright declined to follow it. It
-  deserves its own count and message.
-- **A read-only file is still replaced.** `fix` writes through a rename, and
-  renaming into a directory needs write permission on the *directory*, not on
-  the file. A `0444` image whose parent directory is writable is overwritten
-  without complaint. The new file keeps the original's mode, so the result is
-  still `0444`; only the contents changed.
-- **A hardlinked image loses its link.** The atomic rename replaces the
-  directory entry rather than the inode, so a file with two names ends up with
-  the fixed bytes under one name and the original bytes under the other. That is
-  the same trade every atomic writer makes, and the alternative - writing in
-  place - gives up crash safety for every file to preserve a link almost nobody
-  has.
-- A subdirectory the process cannot read (`chmod 000`) is silently skipped by
-  discovery, so `complete` can overstate coverage. Discovery uses
-  `suppressErrors: true`; it should report unreadable directories.
-- Dotfiles and dot-directories are invisible to discovery (`dot: false`), so
-  images under them are never governed.
-- Running the CLI directly inside this checkout against `fixtures/projects/*`
-  finds nothing without `--no-gitignore`: the repo `.gitignore` excludes the
-  generated fixture images. Tests copy each project to a temp directory
-  instead, which is why they are unaffected.
-- PNG `tEXt` metadata is not reliably detectable through Sharp/libspng;
-  fixtures cannot generate it.
-- Glob matching is case-sensitive on macOS and Linux for determinism
-  (case-insensitive on Windows); collision folding is separate, see `04` 16.4.
-- Animated images are `unsupported`, never processed frame-by-frame.
-- 16-bit images are `unsupported` for anything that would re-encode them,
-  because Sharp's encoders write 8 bits per channel. A rename-only plan on one
-  is still performed. See `04` 17.12 and 18.1.
-- An indexed (palette) PNG is re-encoded truecolour and can come out roughly
-  three times its original size, and a byte budget on one has no answer beyond
-  the explicit failure. The byte-budget phase decided *not* to add a palette
-  flag: `sharp().metadata()` exposes `isPalette` cheaply, but `palette: true`
-  routes through imagequant regardless of the input and is lossless only while
-  the colour count is unchanged, which nothing in the metadata guarantees.
-  Revisit as its own phase, with a raw-pixel equality check as the correctness
-  argument and a genuinely indexed fixture, which the corpus does not have.
-  See `04` 17.18 and 19.9.
-- Renaming onto an existing path is refused immediately before the rename, but
-  a microsecond TOCTOU window remains between the check and the rename.
-  `rename(2)` has no portable fail-if-exists mode. See `04` 17.14.
-- **Before-copies cost one copy of every original a run overwrites.** Bounded by
-  `retain`, which defaults to one run, but a first run over a photo-heavy
-  project can be hundreds of megabytes. `review` prints the size of the store
-  and names `--clean`; it does not warn above a threshold.
-- **Two concurrent `fix` runs over one project can lose one run's manifest
-  entry.** The manifest is a read-merge-write at the end of a run, and the
-  window is microseconds wide. A lock file would close it and is not worth the
-  machinery. See `04` 20.2.
-- **A hard second SIGINT skips the manifest write.** That run's before-copies
-  are hash-named and unreferenced, so the next prune collects them. Correct
-  outcome, no extra code.
-- **A page with two hundred cards is a heavy page.** Lazy loading and
-  exceptions-first make it usable, not small. The agent-vision contact sheet
-  from `04` section 12 stays deferred.
-- **`review` has no `--json`.** The manifest is already stable JSON at a known
-  path, and a second serialization that drifts is worse than none. See `04`
-  20.12.
-- **The review page is only ever as current as its last render.** `review`
-  detects an output that changed or vanished since the run and says so, but it
-  does not re-render itself; a page left open shows what it showed.
-- **A copy of an image is a copy of an image.** Anything sensitive in the repo
-  is now also under `.rasterwright/`, which is why the ignore hint matters and
-  why `review --clean` is a first-class command rather than an afterthought.
+- `init --config` sets the project root (globs are relative to its directory,
+  so `/tmp/x.yml` scans `/tmp` - a read-only trial against a repo you can't
+  write to must call `runInit` directly), and inspects every image, governed or
+  not, since coverage isn't known until all are seen (1.1 s for 76 images on
+  the real theme).
+- The byte ladder almost never moves (fires only after the width ladder tops
+  out - intended, see `04` 21.2); a group under three images is left ungoverned
+  (counted, named in a comment); and the generated config describes the
+  repository, not an intention - ladder numbers, not direct measurement, but
+  equally authoritative-looking.
+- A byte budget is met by quality alone (dimensions/format fixed before
+  encoding; an unreachable ceiling fails explicitly, naming three manual
+  remedies, see `04` 19.8), applies to every encode under its rule, not just
+  budget-driven ones (see `04` 19.11), and is judged where the conversion
+  lands: `maxBytes`/`quality` from the output rule, `format`/`colorSpace`/
+  `stripMetadata`/`autoOrient` from the source rule, tighter limit wins, an
+  unmatched target has no ceiling (see `04` 19.12). The search itself costs a
+  full decode and a buffer copy per probe (~185 ms worst case, ~1.1 s for six
+  probes; 457 KB per clone via `structuredClone` on `overbudget.jpg`; churn
+  scales as probes x source size x concurrency, see `04` 19.7), and can miss a
+  fitting quality on a non-monotone curve without ever writing over the ceiling
+  (314 misses in 20,000 synthetic curves, no false failures, see `04` 19.3).
+- The case-only rename is unreachable from the planner (`pathForFormat()`
+  leaves the path alone once the extension matches the target format);
+  `needsTwoStepRename`, `movingNameFor`, `recoverInterruptedMoves` defend a
+  planner not yet written - keep the tests, skip an integration fixture. Path
+  semantics also come from `process.platform`, not the mounted filesystem, so a
+  case-sensitive volume on macOS (or case-insensitive one on Linux) is judged
+  wrong, but safely.
+- Several file types behave unexpectedly: a symlinked image is invisible to
+  discovery (counted as ungoverned rather than a skipped link); a read-only
+  file is still replaced (renaming needs write permission on the directory, not
+  the file; mode is preserved); a hardlinked image loses its link (atomic
+  rename replaces the directory entry, not the inode); an unreadable
+  subdirectory (`chmod 000`) is silently skipped (`suppressErrors: true`); and
+  dotfiles/dot-directories are invisible (`dot: false`).
+- Running the CLI directly in this checkout against `fixtures/projects/*` finds
+  nothing without `--no-gitignore` (tests copy to a temp directory instead);
+  PNG `tEXt` metadata isn't reliably detectable through Sharp/libspng, so
+  fixtures can't generate it; and glob matching is case-sensitive on
+  macOS/Linux, case-insensitive on Windows (collision folding is separate, see
+  `04` 16.4). Animated images are `unsupported`, as are 16-bit images for
+  anything that would re-encode them (rename-only still runs, see `04` 17.12,
+  18.1); an indexed (palette) PNG is re-encoded truecolour, tripling its size,
+  with no byte-budget answer beyond explicit failure - no palette flag added,
+  since `palette: true` is lossless only if colour count is unchanged, which
+  metadata can't guarantee (see `04` 17.18, 19.9).
+- Renaming onto an existing path has a microsecond TOCTOU window (`rename(2)`
+  has no fail-if-exists mode, see `04` 17.14); two concurrent `fix` runs can
+  similarly lose a manifest entry (not worth a lock file, see `04` 20.2), and a
+  hard second SIGINT skips the write too, though orphaned before-copies get
+  pruned next run. Before-copies themselves cost one copy of every overwritten
+  original, bounded by `retain` (default one run) but potentially hundreds of
+  MB on a first, photo-heavy run; `review` reports store size and names
+  `--clean`.
+- The review page has real limits: no `--json` (the manifest is already stable
+  JSON, see `04` 20.12); only as current as its last render, flagging a changed
+  or vanished output rather than re-rendering; and two hundred cards makes for
+  a heavy but usable page (lazy loading, exceptions-first - the agent-vision
+  contact sheet from `04` section 12 stays deferred). A copy of an image is a
+  copy of an image, so anything sensitive in the repo is now also under
+  `.rasterwright/`, hence the ignore hint and `review --clean`.
 
 ## Roadmap (in order)
 
-1. Batch preflight (done)
-2. Safe execution (done: 2a foundation, 2b wiring)
-3. (folded into 2a) Deterministic operations through one Sharp pipeline
-4. Byte-budget execution (done): quality search JPEG/WebP, lossless PNG attempt,
-   explicit failure.
-5. Idempotence hardening tests (done, folded into the phases above)
-6. `review` (done): static HTML, before-copies, exceptions first
-7. `init` (done): scan, grouping heuristic, ladders, closure, templates,
-   `.gitignore` handling
-8. Agent-facing docs (SKILL.md), packaging polish (done)
+All complete, in order (see Completed phases above for commits and detail): (1)
+batch preflight; (2) safe execution (2a foundation, 2b wiring); (3, folded into
+2a) deterministic operations through one Sharp pipeline; (4) byte-budget
+execution; (5) idempotence hardening tests (folded into the phases above); (6)
+`review`; (7) `init`; (8) agent-facing docs and packaging polish.
 
 ## Human validation pending
 
-- **Is a generated config one a human would keep?** `init` has been run against
-  the real theme and produced limits that match what a human wrote by hand
-  independently, which is strong evidence for the ladders. What nobody has done
-  is generate a config in an unfamiliar repository and judge whether the file
-  reads as a starting point worth editing. That is a taste question, not a
-  correctness one.
-- Real `fix` execution against `~/bokka-theme-env/wp-content/themes/bokka-theme`.
-  Nothing in this session touched that checkout. A human should run
-  `fix --dry-run` there first, read the plan, and only then run `fix` on a
-  clean git working tree.
-- **Does the skill change what an agent does?** `03` section 9 asks it directly
-  and the answer is still unknown. `skills/rasterwright/SKILL.md` exists and
-  reads correctly, but nobody has watched an agent work an image task with it
-  installed and compared that against the same task without it. It also names
-  `--json` fields that `src/cli/render/json.ts` still calls unstable, so the two
-  have to move together.
-- **The review page under a human eye.** It has now been driven headlessly - the
-  page loads with no console errors, all thirteen images resolve, and the
-  overlay, zoom dialog, per-pane buttons, filters and `/` shortcut all behave -
-  but nobody has yet looked at it and judged whether the comparison is actually
-  useful at a glance. That is the remaining question, and it is a design one
-  rather than a correctness one.
+The autonomous v0 build stops here. Everything below needs a human, in
+roughly this order.
+
+1. **Real project, read first.** In
+   `~/bokka-theme-env/wp-content/themes/bokka-theme` on a clean working
+   tree: `rasterwright check`, then `rasterwright fix --dry-run
+   --allow-renames`. Read the plan. Expected today: three PNG/JPEG rewrites
+   and one `.png` -> `.webp` extension correction (`bokka-logo-transparent`),
+   which will break any reference to the old filename.
+2. **Real project, execute.** `rasterwright fix` (without renames first if
+   the reference risk is unclear), then `rasterwright check` should report
+   no errors, and a second `rasterwright fix` must write nothing. Open
+   `rasterwright review` and judge the pixels: the two `cah-form-osc` PNGs
+   (transparency, lossless re-encode toward 500 KB) and the resized
+   `nolanville_skinny` JPEG (quality search) are the ones to look at.
+3. **Visual quality of the quality search.** The tests assert byte ceilings,
+   never appearance. Judge quality 82 and the searched-down results on a
+   real photograph, a logo with fine text, and a gradient.
+4. **Review page design.** It was driven headlessly (no script errors, all
+   images resolve, overlay/zoom/filters work) but nobody has looked at it.
+   Layout, contrast, whether the comparison reads at a glance, narrow widths.
+5. **`init` taste.** Run `rasterwright init --config <scratch path>` in an
+   unfamiliar repository and judge whether the generated file is a starting
+   point worth keeping. The ladders matched a hand-written policy on the
+   theme; that is one data point.
+6. **Messy real-world inputs.** Camera JPEGs with orientation flags and
+   EXIF, Photoshop exports with ICC profiles, CMYK, 16-bit PNGs, animated
+   WebP. Fixtures are sharp-generated and cleaner than reality.
+7. **macOS and Windows.** Case-insensitive path semantics, the two-step
+   case-only rename and its recovery pass, directory fsync tolerance and the
+   browser opener were exercised on Linux only.
+8. **Does the skill change agent behaviour?** Install
+   `skills/rasterwright/SKILL.md` and give an agent an image task with and
+   without it.
+9. **Publishing** is the human's call: the package is `private: true`,
+   version 0.1.0, no remote, no release. `npm pack` works.
