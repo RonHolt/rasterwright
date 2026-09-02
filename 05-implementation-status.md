@@ -7,7 +7,7 @@ Product scope lives in `03`, architecture in `04`, user-facing behaviour in
 
 ## Current state
 
-- HEAD: `bddf1f3 fix: only loosen a limit the rule is actually failing`. The
+- HEAD: `d9105e8 fix: only loosen a limit the rule is actually failing`. The
   last implementation phase was `c39f2eb`, the packaging and agent-docs work;
   everything since is validation and the fixes it turned up.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
