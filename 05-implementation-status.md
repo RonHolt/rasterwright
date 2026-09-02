@@ -7,14 +7,15 @@ Product scope lives in `03`, architecture in `04`, user-facing behaviour in
 
 ## Current state
 
-- HEAD: `058f3cc fix: use adaptive PNG filtering and name format conversions in review`
-  contract`, which is the packaging and agent-docs work.
+- HEAD: `aa1e6d2 docs: record the searched-down quality validation`. The last
+  implementation phase was `c39f2eb`, the packaging and agent-docs work;
+  everything since is validation and the fixes it turned up.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
   (`--verbose`, `--json`), `fix --dry-run` (`--json`, `--allow-renames`), `fix`
   (`--allow-renames`, `--json`, `--no-git`, `--backup-dir`, `--no-review`,
   `--concurrency`), `review` (`--keep`, `--clean`, `--no-open`). Byte budgets
-  enforced. Baseline: 885 tests across 26 files, typecheck and build clean.
+  enforced. Baseline: 889 tests across 26 files, typecheck and build clean.
   Sharp pinned exactly at `0.35.4`. The vertical-slice loop (`04` section 11)
   is closed: check, fix, check clean, fix again writing nothing, before/after
   page; `init` closes the other end by generating a config where none exists.
