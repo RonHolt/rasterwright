@@ -1191,3 +1191,178 @@ the file as `failed` with the decoder's message, leaving the original alone,
 exactly as it does for a file that fails to open.
 
 *The pre-rename existence check has a residual TOCTOU window.* See item 14.
+
+---
+
+## 18. Decisions from wiring `fix` execution
+
+Added 2026-09-01, after section 17. This phase wired the 2a foundation into a
+working `rasterwright fix`. `check` and `fix --dry-run` are unchanged and still
+write nothing; the read-only snapshot tests cover the refusal paths of the real
+command as well now, because a run that refuses must genuinely have changed
+nothing.
+
+**1. The rename-only carve-out.** A candidate this run *encoded* is committed
+only when evaluating it produces no error-level finding at all. That default is
+not weakened anywhere. The one exception is a `planned` plan whose operations
+are exactly one `rename` with `reencode: false`: nothing was produced, so there
+is nothing that could have been produced badly, and the bytes landing under the
+new name are byte-for-byte the bytes already on disk under the old one.
+
+Three checks stay blocking even there - `decode`, `extension` and `format` -
+because they are the only ones the rename itself can be wrong about. Everything
+else (`maxWidth`, `maxHeight`, `maxBytes`, `colorSpace`, `orientation`)
+describes pixels the rename did not touch and which were already in that state
+before the run started. Those findings are reported on the result as
+`warnings`, set `needsAttention`, and exit 1.
+
+The case that forces the decision is `fixtures/projects/depth`.
+`assets/deep-named.jpg` is a 16-bit PNG behind a `.jpg` extension, and its plan
+is a rename and nothing else. After the rename it lands under `assets/*.png`,
+whose `maxWidth: 800` it breaks - and any plan that would encode it is
+`unsupported` for its bit depth (17.12). Under a strict rule the outcome is a
+permanent, unfixable failure: the rename is refused on every invocation, the
+extension stays wrong forever, and there is no flag or config change that
+resolves it. Under the carve-out the file is moved to the name policy demands,
+the width violation is reported as still outstanding, and the repository is
+strictly closer to its policy than it was.
+
+The better long-term home for this is the planner: `planFile()` could evaluate
+the post-rename state against the target rule and return `unfixable`, so the
+dry run reports the dead end instead of the executor discovering it. That is a
+planner change with its own fixture and snapshot churn and was out of this
+phase's scope. The carve-out is the right behaviour until it exists.
+
+**2. Preconditions run before any write, including the startup sweep.** The
+order inside `runFix` is: validate `--backup-dir`, plan, the git precondition,
+recover interrupted renames, sweep stale temps, install the signal handlers,
+execute. The sweep only removes dead-pid `.rasterwright-tmp-*` files, but it is
+still a write, and a run that refuses outside a repository having already
+modified the tree would make the refusal a lie. Recovery runs before the sweep
+because an image under an interim name must be put back before anything
+observes its intended name as free; the two touch disjoint filename patterns
+anyway.
+
+Both passes are scoped to the parent directories of the files this run could
+write, never the whole tree, and both report through stderr and
+`report.diagnostics` rather than being counted silently.
+
+**3. `FixReport.unrecovered`.** `recoverInterruptedMoves()` returns a list of
+interim files it could not put back because the intended name is occupied. Each
+one is a user image sitting under a name nothing else recognises, which is the
+most important thing a run can say, so it is a first-class field rather than a
+diagnostic string - and a non-empty list exits 1 regardless of how every file
+fared.
+
+**4. An undecodable file is `failed`, not `skipped`.** `planFile()` returns
+`unfixable` for a file `check` could not decode, and the status table would
+otherwise map that to `skipped` alongside the files merely waiting on a flag.
+Section 8 says corrupt files are reported as failed, and it is right: a broken
+file is not a policy Rasterwright declined to apply. `statusForSkip()` splits
+the two on whether `plan.unresolved` contains `decode`.
+
+**5. A missed byte ceiling gets its own message.** A non-budget-driven encode
+can still come out over `maxBytes` - `mixed` puts `maxBytes: 200kb` on its broad
+rule, so every encode there carries `outcomeRequiresVerification`. The raw
+`maxBytes` finding says the file is too big, which reads as a bug when the user
+just asked Rasterwright to make it smaller. The failure says what actually
+happened instead: the single encode at `quality.start` produced N, the ceiling
+is M, and the search that would go lower does not exist yet. Correct behaviour,
+stated as a limitation rather than looking like one.
+
+**6. Exit codes.** 0 when nothing needs attention and the run was not
+interrupted; 1 when any result needs attention, an image is stranded, or the run
+was interrupted; 2 for a configuration failure, a refused precondition, or an
+unexpected throw. An interrupt is 1 rather than 130 so the whole tool speaks in
+three codes and a caller never has to special-case a signal number. A refused
+precondition is 2 rather than 1 because nothing was attempted, which is the
+shape of a configuration failure and not of a run that found problems.
+
+**7. The git precondition surveys once, and warns per file only inside a
+repository.** One `surveyGit` call over the source paths of the plans that would
+actually write. In a repository, each modified, untracked or ignored target gets
+its own warning naming the remedy that works for its case. Outside one - or when
+git could not answer - the run refuses unless `--no-git` or `--backup-dir`, and
+when it proceeds anyway it says so once for the whole run rather than repeating
+"git could not tell" per file. Same information, one line.
+
+**8. `--backup-dir` refuses to overlap the project, and refuses to overwrite a
+differing backup.** A directory under the project root would be walked by the
+next `discover()`, governed by the project's own globs, and swept for stale
+temps; the reverse nesting is refused too, because a backup directory containing
+the project makes "which of these is the real tree" a question. Copies mirror
+the repo-relative path rather than being flattened, since two `logo.png` files
+in different directories would otherwise collide and the second would silently
+win. An existing backup of identical bytes is accepted, so a rerun after a
+partial run works; one holding different bytes fails that file, because it may
+be the only surviving original. That is the simpler of the two safe options -
+the alternative was `<name>.<hash>` - and it never destroys anything.
+
+**9. `RASTERWRIGHT_STALL_MS`, a third test-only hook.** It waits inside
+`writeTemp` at the same instant `RASTERWRIGHT_ABORT_AFTER=temp-write` aborts,
+which is the one moment a temp file exists and the rename has not happened. It
+exists so the SIGINT test can deliver its signal at a deterministic edge rather
+than guessing at wall-clock timing. Same discipline as the other two: read from
+the environment per call, inert unless set, documented as test-only.
+
+**10. The dry run lost one line.** `"Executing a plan is not implemented yet."`
+was removed from the plan summary, because it is no longer true. Nothing else
+about `fix --dry-run`'s output or behaviour changed.
+
+**11. Before-copies are still deferred (17.7).** The call site in
+`executeFile()` is marked with a comment, immediately after the backup and
+before the write, where the original bytes are already in hand. `review` is
+where it lands.
+
+**12. The plan is checked against the file it described, immediately before the
+write.** `check` hashes every file it reads, so comparing that hash with the
+bytes the executor re-reads costs one comparison and closes a real window: a run
+over a large project takes long enough for somebody to save an image in an
+editor while it is in flight. Rendering the new bytes through the old plan would
+apply a resize computed for different dimensions and overwrite that edit with
+it. The file is `failed` with "the file changed on disk after this run planned
+it", and rerunning picks up the new contents. The check sits immediately after
+the read, so it covers rename-only plans too - those never reach the pipeline,
+and their target extension was derived from the old bytes just the same.
+
+**13. `executeFile` cannot throw.** Every failure path already returned a
+`failed` result, but a throw from anywhere else - a resolver, an inspector, an
+unexpected libvips state - would reject inside `mapWithConcurrency`, take down
+the whole worker pool, and turn one bad file into an aborted batch exiting 2.
+The body is wrapped, so per-file failure isolation is a property of the code
+rather than of having enumerated every failure correctly.
+
+**14. Only the plans that will execute count as writes.** The git survey and the
+sweep/recovery directory set are built from plans where `skipReasonFor()` returns
+undefined, not from every `planned` plan. A file skipped for its byte budget is
+never opened, so warning that git has no copy of it describes a risk that does
+not exist, and sweeping its directory is a write nothing asked for.
+
+**15. `--backup-dir` validates eagerly and creates lazily.** The overlap refusal
+and the not-a-directory refusal are pure checks; the directory itself is created
+by the first copy that needs one. Otherwise a run refused for a later reason - or
+one that turns out to have nothing to write - leaves an empty directory behind,
+and "Rasterwright refused and changed nothing" has to be true everywhere it is
+claimed.
+
+**16. Residue that cannot be cleaned up is reported, not forgotten.**
+`TempRegistry.cleanup()` keeps any path it failed to unlink, so `paths()`
+afterwards is exactly the list of temp files this process left behind, and
+`runFix` turns each into a diagnostic. The discard on a failed write does the
+same inline, naming the leftover in the failure message. The sweep's own message
+is neutral about how residue got there - a dead pid says the run ended, not how.
+
+**17. `--json` produces a document on an exit 2.** A caller that asked for JSON
+and got an empty stdout has to special-case it, and the most likely way to
+handle that badly is to read "no output" as "no findings". Both commands catch
+their own failures and emit `{rasterwrightVersion, error, exitCode}` on stdout
+with the human message on stderr. Deliberately not a report with zero files,
+which would be a lie in exactly the situation where being believed matters.
+
+**18. Commander's failures exit through Rasterwright's codes.** Positional
+arguments are rejected (`allowExcessArguments(false)`) rather than accepted and
+ignored, `--concurrency` is matched as a whole integer rather than handed to
+`parseInt` (which reads `1.5` as 1), and `exitOverride()` routes commander's own
+usage errors to exit 2 instead of its default 1. A script gating on the exit code
+could otherwise not tell a typo in the command line from a repository full of
+oversized images.

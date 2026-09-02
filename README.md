@@ -12,8 +12,7 @@ not a replacement for your build system's asset pipeline.
 
 ## Status
 
-**Early, personal, open-source. Two read-only commands work today: `check`
-and `fix --dry-run`.**
+**Early, personal, open-source. `check`, `fix --dry-run` and `fix` work today.**
 
 This is a tool built because its author wanted to use it. It is not a product,
 there is nothing to buy, and it makes no network calls, collects no telemetry
@@ -25,19 +24,22 @@ What exists right now:
 |---|---|
 | `rasterwright check` | Implemented, read-only |
 | `rasterwright fix --dry-run` | Implemented, read-only. Reports the plan it would execute. |
-| `rasterwright fix` | **Not implemented.** Refuses to run. |
+| `rasterwright fix` | Implemented, **except byte budgets**. A plan whose encode exists to meet `maxBytes` is reported and skipped. |
 | `rasterwright review` | Not implemented |
 | `rasterwright init` | Not implemented |
 
-Nothing in this build writes an image byte. `fix --dry-run` decides what
-Rasterwright *would* do and prints it; there is no executor behind it yet, and
-plain `rasterwright fix` exits with an error rather than quietly behaving as a
-dry run.
+`check` and `fix --dry-run` write nothing at all. Their read-only guarantee is
+enforced by integration tests that snapshot the path, size, mode, mtime and
+content hash of every file in a project - and the set of directories - before
+and after a run, and assert they are identical.
 
-Both commands' read-only guarantee is enforced by integration tests that
-snapshot the path, size, mode, mtime and content hash of every file in a
-project - and the set of directories - before and after a run, and assert they
-are identical.
+Plain `fix` writes, and only after its preconditions have passed. Every write
+is a verified buffer, a temp file in the same directory, an fsync and an atomic
+rename; the original is byte-for-byte untouched until a candidate has been
+generated in memory and evaluated against policy. **The one thing it does not
+do yet is meet a byte budget**, because the downward quality search does not
+exist; those files are skipped with a plain reason rather than encoded once and
+hoped for.
 
 ## Install (development)
 
@@ -475,21 +477,10 @@ LEFT UNCHANGED
 
 Nothing was written. This is a plan, not a run.
 Rerun with --allow-renames to plan the filename changes above.
-Executing a plan is not implemented yet.
 ```
 
-### Plain `rasterwright fix` is not implemented
-
-```
-$ rasterwright fix
-rasterwright: fix execution is not implemented yet.
-  Use `rasterwright fix --dry-run` to inspect the planned changes.
-```
-
-Exit code `2`. It is deliberately **not** a silent alias for `--dry-run`.
-Quietly making the dangerous command safe teaches the habit of typing the
-dangerous command, which is exactly the muscle memory not to build before an
-executor exists.
+Everything below describes the plan. What happens when that plan is executed is
+[`rasterwright fix`](#rasterwright-fix), further down.
 
 ### One file, one plan
 
@@ -788,15 +779,241 @@ planning cannot know.
 
 This shape is not a stable public API yet.
 
+## `rasterwright fix`
+
+Without `--dry-run`, `fix` executes the plan it just printed. It plans through
+exactly the same read-only pipeline, so what runs is what the dry run described.
+
+```
+$ rasterwright fix --allow-renames
+rasterwright: assets/hero.jpg has uncommitted changes, which are the one thing git
+cannot restore; commit or stash them first
+
+Rasterwright Fix
+
+SKIPPED
+
+⊘ assets/heavy.jpg
+
+    encode        JPEG
+    target        <= 200 KB
+    quality       82
+    skipped       the byte-budget search is not implemented yet, so this file is left as it is
+
+FIXED
+
+✓ assets/oversized.jpg
+
+    resize        2000x1200 -> 1200x720
+    encode        JPEG
+    ceiling       <= 200 KB
+    quality       82
+    size          412.3 KB -> 88.1 KB  (79% smaller)
+
+✓ assets/heroes/hero.jpg
+
+    encode        WebP
+    rename        .jpg -> .webp
+    path          assets/heroes/hero.webp
+    size          140.2 KB -> 41.0 KB  (71% smaller)
+
+15 images inspected
+2 files fixed
+1 file skipped
+12 already compliant
+552 KB -> 129 KB across the files that changed (423 KB saved)
+
+Byte budgets are not enforced yet. A plan whose encode exists to meet maxBytes is
+reported and skipped until the byte-budget phase lands.
+```
+
+Exceptions come first - failed, then skipped, then blocked - because those are
+the only part of the report anyone has to act on. The fixed files are already
+correct.
+
+### What actually executes
+
+| Operation | Executes today |
+|---|---|
+| `autoOrient` | Yes. Pixels rotated, flag cleared. |
+| `resize` | Yes. Down only, `fit: inside`. |
+| `toColorSpace` | Yes, via an ICC transform to sRGB. |
+| `encode` | Yes, at `quality.start`, **once**. |
+| `rename` | Yes, with `--allow-renames`. |
+
+**Byte budgets are not enforced.** An encode that exists *because* a file is
+over `maxBytes` needs a downward quality search, and that does not exist yet, so
+those files are `skipped` before anything is encoded rather than encoded once
+and hoped for. A ceiling that merely also applies to a rewrite something else
+required *is* enforced: if the result comes out over the ceiling, the file is
+`failed` and the original is left exactly as it was.
+
+This is why the `quality` row reads differently in the two reports. The plan
+says `82, searched down to 40 if needed`, describing a band it would search; the
+run says `82`, because that is the one quality it encoded at.
+
+### A file that changes mid-run is refused
+
+The plan describes the file `check` inspected. If the bytes on disk are no
+longer those bytes when the executor reaches them, every decision in the plan
+was made about a file that no longer exists, and rendering the new bytes through
+the old plan would overwrite somebody's edit with a resize computed for a
+different image. `check` already hashed what it read, so this costs one
+comparison: the file is `failed` with "the file changed on disk after this run
+planned it", and rerunning picks up the new contents.
+
+### Nothing is overwritten before it has been verified
+
+For every file, in this order:
+
+1. the whole output is rendered into a Buffer in memory;
+2. it is inspected by the same inspector `check` uses, labelled with the path it
+   is going to live at;
+3. it is evaluated against the effective policy of *that* path, because a rename
+   can move a file out from under the rule that governed it;
+4. only then is anything opened for writing.
+
+A candidate that still breaks a rule is a `failed` file, not a written one. Two
+further assertions the policy language cannot express are checked as well: the
+encoder must have produced the format the plan named, and an encode required to
+preserve transparency must have preserved it.
+
+Writes are a temp file in the same directory, an fsync, and an atomic rename,
+with the parent directory fsynced afterwards. A reader never observes a
+half-written image. On a format conversion the new path is created first and the
+old one unlinked second, so a crash between them leaves both files rather than
+neither. File mode is preserved; mtime deliberately is not.
+
+### Preconditions, checked before anything is written
+
+**Git is the undo mechanism.** `fix` overwrites tracked files in place and
+relies on `git checkout --` rather than keeping a parallel set of backups.
+
+- **Inside a repository:** it proceeds, and warns per file that git has no
+  stored copy of. A modified file needs a commit or a stash, an untracked one
+  needs `git add`, an ignored one needs `git add -f`. Warnings only. They never
+  block a file and never change the exit code.
+- **Outside a repository, or when git cannot answer:** it refuses with exit `2`
+  and writes nothing at all, unless you pass `--no-git` (accept that there is no
+  undo) or `--backup-dir <path>`.
+
+`--backup-dir` copies each original to `<dir>/<its repo-relative path>`
+immediately before overwriting it, and satisfies the precondition above. The
+directory must be outside the project, because one inside it would be walked by
+the next scan and governed by the project's own rules. An existing backup of the
+same bytes is fine, so a rerun works; one holding *different* bytes fails that
+file rather than replacing what may be the only surviving original.
+
+After the preconditions pass, and only then, the run recovers any image an
+interrupted rename left under an interim name and sweeps any stale
+`.rasterwright-tmp-*` file whose owning process is gone - in the directories it
+is about to write to, and nowhere else. Both are reported on stderr.
+
+### Ctrl+C
+
+The first `SIGINT` sets a stop flag. Files already in flight finish their atomic
+write; every file after them is `skipped`. Nothing is left half-written, no temp
+file survives, and the run prints what it got through:
+
+```
+Interrupted after 7 of 15 files; 3 fixed.
+Nothing was left half-written. Rerun the same command to continue.
+```
+
+Exit code `1`. A second `SIGINT` exits immediately. Rerunning is the whole
+resume mechanism: a compliant file produces no plan, so a second run picks up
+exactly where the first stopped.
+
+### Idempotence
+
+A second `fix` over the same project writes **zero bytes**. Not "produces the
+same result" - opens nothing for writing at all. The file's current state is the
+only source of truth, there is no hidden provenance metadata in any image, and a
+compliant file produces no findings, no findings produce no plan, and an empty
+plan changes nothing.
+
+### `rasterwright fix --json`
+
+The report goes to stdout and every diagnostic to stderr, so the output stays
+parseable. On top of the plan fields:
+
+```jsonc
+{
+  "runId": "0f5f2b1e-...",              // identifies this run
+  "engine": { "sharp": "0.35.4", "vips": "8.17.1" },
+  "dryRun": false,
+  "permissions": { "allowRenames": true },
+  "summary": {
+    "checked": 15, "fixed": 5, "unchanged": 8, "skipped": 2,
+    "blocked": 0, "failed": 0,
+    "bytesBefore": 565248, "bytesAfter": 132096,  // over the files that changed
+    "interrupted": false, "completed": 15, "ignored": 1
+  },
+  "results": [                          // every file that is not `unchanged`
+    {
+      "path": "assets/heroes/hero.jpg",
+      "outputPath": "assets/heroes/hero.webp",
+      "status": "fixed",                // fixed | skipped | blocked | failed
+      "applied": ["encode", "rename"],
+      "before": { "bytes": 143565, "width": 600, "height": 400, "format": "jpeg" },
+      "after":  { "bytes": 41984,  "width": 600, "height": 400, "format": "webp" },
+      "savingsPct": 70.7,
+      "warnings": [],                   // error-level findings still outstanding
+      "needsAttention": false,
+      "plan": { }                       // the plan, exactly as --dry-run reports it
+    }
+  ],
+  "unrecovered": [],                    // images stranded under an interim name
+  "diagnostics": []
+}
+```
+
+`needsAttention` is the single predicate the exit code reads. `unrecovered` is
+the one to watch: each entry is an image an interrupted rename left under an
+interim name that this run could not put back, and it is never deleted.
+
+### Result statuses
+
+| Status | Meaning |
+|---|---|
+| `fixed` | A verified candidate replaced the original. |
+| `unchanged` | Nothing to do. Counted in the summary, omitted from `results`. |
+| `skipped` | A plan exists and this run will not execute it: it needs a permission, is unsupported, is unfixable, or depends on the byte-budget search. |
+| `blocked` | Batch preflight refused the plan's output path. |
+| `failed` | Execution or verification failed, or the image could not be decoded. **The original is untouched.** |
+
 ## Exit codes
 
-One model, both commands. Warnings never produce a non-zero exit.
+One model, every command. Warnings never produce a non-zero exit.
 
-| Code | `check` | `fix --dry-run` |
-|---|---|---|
-| `0` | No error-level findings. | Every error is covered by a plan this run could execute (or there are none). |
-| `1` | At least one error. | At least one file is left unresolved: waiting on permission, blocked by a path conflict, unfixable, or unsupported. |
-| `2` | Configuration or runtime error. Nothing was checked. | Same. Plain `fix` without `--dry-run` also exits `2`. |
+| Code | `check` | `fix --dry-run` | `fix` |
+|---|---|---|---|
+| `0` | No error-level findings. | Every error is covered by a plan this run could execute (or there are none). | Nothing needs attention, and the run was not interrupted. |
+| `1` | At least one error. | At least one file is left unresolved: waiting on permission, blocked by a path conflict, unfixable, or unsupported. | A file failed, was skipped or was blocked; an image is stranded under an interim name; or the run was interrupted. |
+| `2` | Configuration or runtime error. Nothing was checked. | Same. | Same, plus a refused precondition: outside a git repository without `--no-git`, or an unusable `--backup-dir`. Nothing was written. |
+
+An interrupted run exits `1`, not `130`. Three codes with one meaning each is
+worth more than agreeing with the shell convention for a signal. A usage error -
+an unknown flag, a stray positional argument, a fractional `--concurrency` - is
+also a `2`, because nothing was checked.
+
+### `--json` on an exit `2`
+
+A run that asked for JSON gets JSON, including when it fails before it can
+produce a report. Stdout carries one document and stderr carries the human
+message:
+
+```json
+{
+  "rasterwrightVersion": "0.1.0",
+  "error": "/path/to/project is not inside a git repository, so an overwrite could not be undone",
+  "exitCode": 2
+}
+```
+
+Deliberately not a report with zero files. Nothing was checked, and a document
+saying "0 errors" would be a lie in exactly the situation where being believed
+matters most.
 
 An unreadable image is an exit `1`, not a `0`: it is a file that is supposed to
 be governed and is not being governed. The rest of the batch still runs.
@@ -818,24 +1035,31 @@ rasterwright check [options]
 rasterwright fix [options]
 
   -c, --config <path>  path to .rasterwright.yml (default: nearest one, searching upwards)
-  --dry-run            report what fix would do, and write nothing (required today)
+  --dry-run            report what fix would do, and write nothing
   --allow-renames      permit operations that change a filename
   --json               emit machine-readable JSON on stdout instead of a report
   --no-gitignore       do not skip git-ignored files
-  --concurrency <n>    number of images to inspect in parallel
+  --no-git             run outside a git repository, accepting that overwrites cannot be undone
+  --backup-dir <path>  copy every original into this directory before overwriting it
+  --concurrency <n>    number of images to process in parallel
 ```
+
+Reach for `--dry-run` first. It is the same planning pass, printed instead of
+performed.
 
 ## Planned
 
 Clearly labelled as **not built**:
 
-- **Executing a plan.** Everything `fix --dry-run` describes - auto-orient,
-  downscale, colour conversion, one encode with a downward quality search
-  against the byte ceiling, atomic temp-file-plus-rename writes, per-file
-  failure isolation, and verification of the output against policy. The plans
-  exist; nothing applies them yet, on purpose. Rasterwright gets permission to
-  change pixels after its plans have been read on real repositories.
-- `rasterwright review` - a local static HTML before/after page.
+- **Byte budgets.** A downward quality search for JPEG and WebP, a
+  maximum-effort lossless attempt for PNG, and an explicit failure where the
+  ceiling cannot be met. Until it lands, a plan whose encode exists to satisfy
+  `maxBytes` is reported and skipped, and an indexed PNG that grows on rewrite
+  has no answer either. Everything else `fix --dry-run` describes - auto-orient,
+  downscale, colour conversion, one verified encode, atomic writes, per-file
+  failure isolation - executes today.
+- `rasterwright review` - a local static HTML before/after page. It is also
+  where before-copies land; `fix` marks the call site and keeps none today.
 - `rasterwright init` - a starter config generated from what a repo already
   contains.
 
@@ -865,22 +1089,27 @@ src/
   config/      load, validate and resolve .rasterwright.yml
   scanner/     file discovery and Sharp-based inspection
   policy/      pure functions: ImageInfo + rule -> findings
-  operations/  pure functions: findings + permissions -> PlannedOperation[]
-  utils/       byte parsing, hashing, ICC reading, paths, concurrency
+  operations/  planning (pure), plus the pipeline, atomic writer and executor
+  utils/       byte parsing, hashing, ICC reading, paths, concurrency, signals
   run-check.ts the read-only check pipeline
-  run-fix.ts   check's pipeline plus planning
+  run-fix.ts   check's pipeline, plus planning (read-only) and execution
 ```
 
 The architecture is `policy -> analysis -> operation plan -> execution ->
-verification`. **This build stops after the operation plan.** `operations/plan.ts`
-exists; `operations/execute.ts` does not.
+verification`, and every stage of it now exists. The layering is what keeps the
+guarantees provable rather than merely intended:
 
-The CLI never calls Sharp directly. `policy/` and `operations/plan.ts` are pure
-functions over plain data - the planner reads nothing beyond the `FileResult` it
-is handed, calls no Sharp, and touches no filesystem, which is what makes plans
-deterministic and testable without a single image file. Nothing on either
-command's path imports anything that writes, which is what makes both read-only
-by construction rather than by discipline.
+- `policy/` and `operations/plan.ts` are pure functions over plain data. The
+  planner reads nothing beyond the `FileResult` it is handed, calls no Sharp,
+  and touches no filesystem, which is what makes plans deterministic and
+  testable without a single image file.
+- `operations/pipeline.ts` is bytes in, bytes out. No filesystem, no policy.
+- `operations/atomic.ts` is the only module that writes, and nothing in it knows
+  what an image is.
+- `check` and `fix --dry-run` import nothing that writes, which is what makes
+  both read-only by construction rather than by discipline.
+
+The CLI never calls Sharp directly.
 
 Fixture images are generated by `scripts/generate-fixtures.ts` rather than
 committed as binaries. They are real files produced by Sharp, deterministic, and

@@ -630,6 +630,13 @@ export interface FixSummary {
   skipped: number;
   blocked: number;
   failed: number;
+  /**
+   * Bytes before and after, summed over the files that actually changed.
+   *
+   * Deliberately not over every governed file: a total dominated by files
+   * nothing touched says nothing about what the run did, and the difference
+   * between the two numbers is the only reason to print either.
+   */
   bytesBefore: number;
   bytesAfter: number;
   /** True when the run stopped early on SIGINT. */
@@ -659,5 +666,16 @@ export interface FixReport {
   conflicts: PlanSetConflict[];
   /** Every governed file, `unchanged` ones included. */
   results: FixResult[];
+  /**
+   * Absolute paths of images an interrupted rename left under an interim name,
+   * which the startup recovery pass could not put back because the intended
+   * name is occupied.
+   *
+   * This is the most important thing a run can report: each entry is one of the
+   * user's images sitting under a name nothing else recognises. It is never
+   * deleted and never silently ignored, and a non-empty list makes the run exit
+   * non-zero regardless of how every file fared.
+   */
+  unrecovered: string[];
   diagnostics: string[];
 }

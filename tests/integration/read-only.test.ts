@@ -172,9 +172,13 @@ describe('fix --dry-run is read-only', () => {
     await assertReadOnly('collisions', ['fix', '--dry-run', '--allow-renames']);
   });
 
-  it('changes nothing when fix is invoked without --dry-run', async () => {
+  it('changes nothing when a real fix refuses its preconditions', async () => {
+    // These projects are copied outside any repository, so `fix` refuses for
+    // want of an undo mechanism. A refusal that had already swept a directory
+    // or created a backup would not be a refusal, so the same snapshot applies.
     await assertReadOnly('mixed', ['fix']);
     await assertReadOnly('mixed', ['fix', '--allow-renames']);
+    await assertReadOnly('mixed', ['fix', '--backup-dir', 'inside-the-project']);
   });
 
   it('creates no cache, review directory, manifest or backup', async () => {

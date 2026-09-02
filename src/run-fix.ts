@@ -1,15 +1,33 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 
+import { recoverInterruptedMoves, sweepStaleTemps, TempRegistry } from './operations/atomic.js';
+import { resolveBackupDir } from './operations/backup.js';
+import {
+  executeFile,
+  skipReasonFor,
+  INTERRUPTED_REASON,
+  type ExecuteContext,
+} from './operations/execute.js';
+import { classifyPath, surveyGit } from './operations/git.js';
 import { planFile } from './operations/plan.js';
 import { defaultPathSemantics, validatePlanSet, type PathSemantics } from './operations/plan-set.js';
+import { createResolver } from './config/resolve.js';
+import { engineVersions } from './scanner/inspect.js';
 import { runCheck, type RunCheckOptions } from './run-check.js';
+import { defaultConcurrency, mapWithConcurrency } from './utils/concurrency.js';
+import { RasterwrightError } from './utils/errors.js';
 import { toAbsolute } from './utils/paths.js';
+import { createStopFlag, installStopHandlers } from './utils/signal.js';
 import type { LoadedConfig } from './config/load.js';
 import type {
   CheckReport,
   FilePlan,
   FixPermissions,
   FixPlanReport,
+  FixReport,
+  FixResult,
   PlanSetConflict,
 } from './types.js';
 
@@ -27,14 +45,17 @@ import type {
  * before anything is reported, so `complete` means "this whole batch could be
  * executed", not "each file looked fine on its own".
  *
- * Still strictly read-only. `operations/execute.ts` does not exist; this build
- * plans and stops. The only filesystem access preflight adds is `lstatSync` on
- * paths a rename would land on.
+ * `planRun` and `runFixPlan` are strictly read-only: the only filesystem access
+ * preflight adds beyond `check` is `lstatSync` on paths a rename would land on.
+ * `runFix` is the one function in this file that writes, and everything it
+ * writes goes through `operations/execute.ts` and `operations/atomic.ts`.
  */
 
 export interface RunFixPlanOptions extends RunCheckOptions {
   /** `--allow-renames`. Planning permission only; nothing is written either way. */
   allowRenames?: boolean;
+  /** How the filesystem compares two paths. Defaults to the platform's. */
+  semantics?: PathSemantics;
 }
 
 export interface RunFixPlanResult {
@@ -81,7 +102,10 @@ export async function planRun(
   );
 
   const planned = check.files.map((file) => planFile(file, permissions));
-  const semantics = defaultPathSemantics();
+  // Taken from the caller when there is one, so a run derives path semantics
+  // exactly once and preflight, the executor, the recovery pass and every
+  // rename are guaranteed to be answering the same question the same way.
+  const semantics = options.semantics ?? defaultPathSemantics();
   const survey = surveyTargets(config.root, planned, discovered, semantics);
   const preflight = validatePlanSet(planned, survey.paths, semantics, survey.unprobeable);
 
@@ -137,6 +161,256 @@ export async function runFixPlan(
   };
 
   return { report, check, diagnostics };
+}
+
+export interface RunFixOptions extends RunFixPlanOptions {
+  /** `--no-git`: proceed outside a repository, accepting that there is no undo. */
+  noGit?: boolean;
+  /** `--backup-dir`: copy each original here before overwriting it. */
+  backupDir?: string;
+}
+
+export interface RunFixResult {
+  report: FixReport;
+  diagnostics: string[];
+}
+
+/**
+ * Execute a plan set.
+ *
+ * The ordering below is the safety property, not an implementation detail:
+ *
+ *   1. validate `--backup-dir`
+ *   2. plan (read-only)
+ *   3. the git precondition
+ *   4. recover interrupted renames, then sweep stale temp files
+ *   5. install the signal handlers
+ *   6. execute, with bounded concurrency
+ *   7. clean up, uninstall, report
+ *
+ * Steps 4 onward write. Steps 1 to 3 must therefore come first, or a run that
+ * refuses because it is outside a repository has still modified the tree, and
+ * "Rasterwright refused and changed nothing" stops being true.
+ */
+export async function runFix(
+  config: LoadedConfig,
+  version: string,
+  options: RunFixOptions = {},
+): Promise<RunFixResult> {
+  // 1. Validation only. It creates nothing: a run that is about to be refused
+  //    for another reason, or that turns out to have nothing to write, must not
+  //    leave a directory behind. The copies create it on the first write.
+  const backupDir =
+    options.backupDir === undefined ? undefined : resolveBackupDir(config.root, options.backupDir);
+
+  // 2. The same preflight the dry run reports, so the executor runs against the
+  //    plan set the dry run described rather than one a second preflight built.
+  //    Path semantics are derived once, here, and handed to everything that
+  //    compares two paths: preflight, the executor, recovery and every rename.
+  const semantics = options.semantics ?? defaultPathSemantics();
+  const { plans, conflicts, check, diagnostics, permissions } = await planRun(config, version, {
+    ...options,
+    semantics,
+  });
+  const before = new Map(check.files.map((file) => [file.path, file]));
+
+  // Only the plans this run will actually execute. A file skipped for its byte
+  // budget is one nothing will open for writing, so warning that git has no
+  // copy of it describes a risk that does not exist, and sweeping its directory
+  // is a write nothing asked for.
+  const executing = plans.filter(
+    (plan) => plan.status === 'planned' && skipReasonFor(plan) === undefined,
+  );
+
+  // 3. Git is the undo mechanism (04 section 8), so its absence is a refusal
+  //    rather than a warning unless the user has said otherwise.
+  diagnostics.push(...gitPreconditions(config.root, executing, options, backupDir));
+
+  const registry = new TempRegistry();
+  const stop = createStopFlag();
+
+  // 4. Residue from an earlier run that ended abruptly, in the directories this
+  //    run is about to write to and nowhere else. Recovery first: an image under
+  //    an interim name must be put back before anything observes its intended
+  //    name as free.
+  const directories = writeDirectories(config.root, executing);
+  const recovery = await recoverInterruptedMoves(directories, semantics);
+  for (const recovered of recovery.recovered) {
+    diagnostics.push(`recovered ${recovered} from a rename an earlier run did not finish`);
+  }
+  for (const stranded of recovery.needsAttention) {
+    diagnostics.push(
+      `${stranded} is an image left behind by an interrupted rename, and its intended name is ` +
+        'occupied; it has been left exactly as it is and must be renamed by hand',
+    );
+  }
+  // Deliberately neutral about how it got there. A temp file whose owning
+  // process is gone is residue from an earlier run, and Rasterwright has no way
+  // to know whether that run was killed, crashed, or lost its machine.
+  for (const swept of await sweepStaleTemps(directories)) {
+    diagnostics.push(`removed ${swept}, a stale temp file left by an earlier run`);
+  }
+
+  // 5-7.
+  const uninstall = installStopHandlers(stop, registry);
+  let results: FixResult[];
+  try {
+    const resolver = createResolver(config.policy);
+    const context: ExecuteContext = {
+      root: config.root,
+      resolver,
+      allGlobs: resolver.globs(),
+      semantics,
+      permissions,
+      registry,
+      stop,
+      backupDir,
+    };
+
+    results = await mapWithConcurrency(
+      plans,
+      options.concurrency ?? defaultConcurrency(),
+      (plan) => executeFile(context, plan, before.get(plan.path)),
+    );
+  } finally {
+    // Nothing is in flight once the pool has drained, which is the only moment
+    // it is safe to unlink temp files that a worker might still have been using.
+    registry.cleanup();
+    uninstall();
+  }
+
+  // Anything the registry still holds is a temp file this run created and could
+  // not remove, which usually means the directory stopped being writable
+  // underneath it. Saying so is the whole remedy: the file is disposable, but
+  // only somebody looking at the tree can delete it now.
+  for (const leftover of registry.paths()) {
+    diagnostics.push(
+      `${leftover} is a temp file this run created and could not remove; it is safe to delete`,
+    );
+  }
+
+  const count = (status: FixResult['status']): number =>
+    results.filter((result) => result.status === status).length;
+  const changed = results.filter((result) => result.after !== undefined);
+  const interruptSkip = (result: FixResult): boolean =>
+    result.status === 'skipped' && result.reason === INTERRUPTED_REASON;
+
+  const report: FixReport = {
+    rasterwrightVersion: version,
+    runId: randomUUID(),
+    engine: engineVersions(),
+    dryRun: false,
+    permissions,
+    configPath: config.configPath,
+    root: config.root,
+    summary: {
+      checked: results.length,
+      fixed: count('fixed'),
+      unchanged: count('unchanged'),
+      skipped: count('skipped'),
+      blocked: count('blocked'),
+      failed: count('failed'),
+      bytesBefore: changed.reduce((total, result) => total + result.before.bytes, 0),
+      bytesAfter: changed.reduce((total, result) => total + (result.after?.bytes ?? 0), 0),
+      interrupted: stop.requested,
+      completed: results.filter((result) => !interruptSkip(result)).length,
+      ignored: check.summary.ignored,
+    },
+    conflicts,
+    // Unchanged files are counted and omitted, exactly as the plan report omits
+    // them: repeating what `check --json` already says would bury the files this
+    // run actually touched.
+    results: results.filter((result) => result.status !== 'unchanged'),
+    unrecovered: recovery.needsAttention,
+    diagnostics,
+  };
+
+  return { report, diagnostics };
+}
+
+/** True when anything about this run is still outstanding. Drives the exit code. */
+export function fixNeedsAttention(report: FixReport): boolean {
+  return (
+    report.summary.interrupted ||
+    report.unrecovered.length > 0 ||
+    report.results.some((result) => result.needsAttention)
+  );
+}
+
+/**
+ * Refuse, or warn, about what git can and cannot restore.
+ *
+ * Inside a repository every overwrite is recoverable with `git checkout --`,
+ * except on files git has no stored copy of. Those get a warning naming the
+ * remedy that actually works for their case, and never a block: the user asked
+ * for the fix.
+ *
+ * Outside a repository, or when git could not answer, there is no undo at all,
+ * and the run refuses unless `--no-git` or `--backup-dir` says to proceed
+ * anyway. "Unknown" is treated as "no" rather than as "clean" for the reason
+ * `operations/git.ts` was written around: a confident wrong answer here sends
+ * the whole run down the wrong path.
+ */
+function gitPreconditions(
+  root: string,
+  executing: readonly FilePlan[],
+  options: RunFixOptions,
+  backupDir: string | undefined,
+): string[] {
+  const permitted = options.noGit === true || backupDir !== undefined;
+  const survey = surveyGit(root, executing.map((plan) => plan.path));
+
+  if (survey.state === 'in-repo') {
+    const diagnostics: string[] = [];
+    for (const plan of executing) {
+      const remedy = REMEDIES[classifyPath(survey, plan.path)];
+      if (remedy !== undefined) diagnostics.push(`${plan.path} ${remedy}`);
+    }
+    return diagnostics;
+  }
+
+  const cause =
+    survey.state === 'not-a-repo'
+      ? `${root} is not inside a git repository`
+      : `git could not tell whether ${root} is a repository (${survey.reason ?? 'no reason given'})`;
+
+  if (!permitted) {
+    throw new RasterwrightError(
+      `${cause}, so an overwrite could not be undone`,
+      'Rerun with --no-git to accept that, or --backup-dir <path> to copy every original first.',
+    );
+  }
+
+  return [
+    backupDir === undefined
+      ? `${cause}; --no-git was given, so these overwrites cannot be undone`
+      : `${cause}; every original is copied to ${backupDir} before it is overwritten`,
+  ];
+}
+
+/** How to make each unrecoverable case recoverable. One remedy per state. */
+const REMEDIES: Partial<Record<ReturnType<typeof classifyPath>, string>> = {
+  modified: 'has uncommitted changes, which are the one thing git cannot restore; commit or stash them first',
+  untracked: 'is not tracked by git, so overwriting it cannot be undone; `git add` it or use --backup-dir',
+  ignored: 'is excluded by .gitignore, so git has no copy of it; `git add -f` it or use --backup-dir',
+  unknown: 'could not be classified by git, so whether an overwrite can be undone is unknown',
+};
+
+/**
+ * Every directory this run could write into.
+ *
+ * Scoped to the plans that would actually write, never the whole tree: the
+ * sweep and the recovery pass are the only writes that happen before any file
+ * is executed, and they have no business touching a directory this run was
+ * never going to open.
+ */
+function writeDirectories(root: string, executing: readonly FilePlan[]): string[] {
+  const directories = new Set<string>();
+  for (const plan of executing) {
+    directories.add(path.dirname(toAbsolute(root, plan.path)));
+    directories.add(path.dirname(toAbsolute(root, plan.targetPath)));
+  }
+  return [...directories].sort();
 }
 
 interface TargetSurvey {

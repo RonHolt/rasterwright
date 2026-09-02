@@ -1,5 +1,6 @@
 import { loadConfig } from '../config/load.js';
 import { runCheck } from '../run-check.js';
+import { reportFailure } from './failure.js';
 import { renderHuman } from './render/human.js';
 import { renderJson } from './render/json.js';
 import { EXIT_CLEAN, EXIT_ERRORS } from '../utils/errors.js';
@@ -32,20 +33,26 @@ export interface Streams {
  * something people start passing flags to silence.
  */
 export async function checkCommand(options: CheckCommandOptions, streams: Streams): Promise<number> {
-  const config = loadConfig(options.cwd, options.config);
-  const version = readVersion();
+  try {
+    const config = loadConfig(options.cwd, options.config);
+    const version = readVersion();
 
-  const { report, diagnostics } = await runCheck(config, version, {
-    noGitignore: options.gitignore === false,
-    ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
-  });
+    const { report, diagnostics } = await runCheck(config, version, {
+      noGitignore: options.gitignore === false,
+      ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
+    });
 
-  for (const diagnostic of diagnostics) streams.err(`rasterwright: ${diagnostic}`);
-  streams.out(
-    options.json === true
-      ? renderJson(report, diagnostics)
-      : renderHuman(report, { verbose: options.verbose === true }),
-  );
+    for (const diagnostic of diagnostics) streams.err(`rasterwright: ${diagnostic}`);
+    streams.out(
+      options.json === true
+        ? renderJson(report, diagnostics)
+        : renderHuman(report, { verbose: options.verbose === true }),
+    );
 
-  return report.clean ? EXIT_CLEAN : EXIT_ERRORS;
+    return report.clean ? EXIT_CLEAN : EXIT_ERRORS;
+  } catch (error) {
+    // Caught here rather than in `index.ts` so `--json` still produces a single
+    // parseable document. See `reportFailure`.
+    return reportFailure(error, options.json === true, streams);
+  }
 }

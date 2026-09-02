@@ -4,14 +4,23 @@ import { Command } from 'commander';
 import { checkCommand } from './check.js';
 import { fixCommand } from './fix.js';
 import { readVersion } from './version.js';
-import { EXIT_ERROR, RasterwrightError } from '../utils/errors.js';
+import { EXIT_CLEAN, EXIT_ERROR, RasterwrightError } from '../utils/errors.js';
 
 const program = new Command();
 
-/** Shared by every command that inspects images. */
+/**
+ * Shared by every command that inspects images.
+ *
+ * Matched as a whole rather than handed to `parseInt`, which reads `1.5` as 1
+ * and `4bananas` as 4. Silently rounding a value the user typed on purpose is
+ * how a flag comes to mean something other than what it says.
+ */
 function parseConcurrency(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed < 1) {
+  if (!/^[0-9]+$/.test(value.trim())) {
+    throw new RasterwrightError(`--concurrency: expected a positive integer, got ${value}`);
+  }
+  const parsed = Number(value.trim());
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
     throw new RasterwrightError(`--concurrency: expected a positive integer, got ${value}`);
   }
   return parsed;
@@ -30,6 +39,11 @@ program
 program
   .command('check')
   .description('Report image policy violations. Never modifies anything.')
+  // A positional argument is always a mistake here: neither command takes one,
+  // and commander's default is to accept and ignore it. `rasterwright check
+  // assets/` would then silently check the whole project instead of saying that
+  // it cannot narrow the scope that way.
+  .allowExcessArguments(false)
   .option('-c, --config <path>', 'path to .rasterwright.yml (default: nearest one, searching upwards)')
   .option('--json', 'emit machine-readable JSON on stdout instead of a report')
   .option('-v, --verbose', 'list every warning and note individually instead of summarizing')
@@ -47,7 +61,8 @@ program
 
 program
   .command('fix')
-  .description('Plan image fixes. Only --dry-run is implemented; nothing is ever written.')
+  .description('Apply image fixes. Use --dry-run first: it prints the plan and writes nothing.')
+  .allowExcessArguments(false)
   .option('-c, --config <path>', 'path to .rasterwright.yml (default: nearest one, searching upwards)')
   .option('--dry-run', 'report what fix would do, and write nothing')
   .option(
@@ -56,25 +71,55 @@ program
   )
   .option('--json', 'emit machine-readable JSON on stdout instead of a report')
   .option('--no-gitignore', 'do not skip git-ignored files')
-  .option('--concurrency <n>', 'number of images to inspect in parallel', parseConcurrency)
+  .option('--no-git', 'run outside a git repository, accepting that overwrites cannot be undone')
+  .option('--backup-dir <path>', 'copy every original into this directory before overwriting it')
+  .option('--concurrency <n>', 'number of images to process in parallel', parseConcurrency)
   .action(async (options: {
     config?: string;
     dryRun?: boolean;
     allowRenames?: boolean;
     json?: boolean;
     gitignore?: boolean;
+    git?: boolean;
+    backupDir?: string;
     concurrency?: number;
   }) => {
-    process.exitCode = await fixCommand({ cwd: process.cwd(), ...options }, streams);
+    // Commander turns `--no-git` into `git: false`, so the flag is read here
+    // and passed on under the name the rest of the code uses for it.
+    process.exitCode = await fixCommand(
+      { cwd: process.cwd(), ...options, noGit: options.git === false },
+      streams,
+    );
   });
 
-// `review` and `init` are deliberately absent, and so is fix execution. Nothing
-// in this build writes an image byte.
+// `review` and `init` are deliberately absent. `check` and `fix --dry-run`
+// still write nothing at all; only plain `fix` writes, and only after its
+// preconditions have passed.
+
+/**
+ * Commander's own failures exit through Rasterwright's codes, not its default.
+ *
+ * Without this, an unknown flag or a stray positional argument exits 1 - the
+ * code that means "the run found problems" - and a script gating on it cannot
+ * tell a typo in the command line from a repository full of oversized images.
+ * A usage error is a 2: nothing was checked.
+ */
+program.exitOverride();
+for (const command of program.commands) command.exitOverride();
+
+/** Commander throws these for `--help` and `--version`, which are successes. */
+const COMMANDER_SUCCESS = new Set(['commander.help', 'commander.helpDisplayed', 'commander.version']);
 
 async function main(): Promise<void> {
   try {
     await program.parseAsync(process.argv);
   } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code !== undefined && code.startsWith('commander.')) {
+      // Commander has already written its own message, help text included.
+      process.exitCode = COMMANDER_SUCCESS.has(code) ? EXIT_CLEAN : EXIT_ERROR;
+      return;
+    }
     if (error instanceof RasterwrightError) {
       process.stderr.write(`rasterwright: ${error.message}\n`);
       if (error.hint !== undefined) process.stderr.write(`  ${error.hint}\n`);

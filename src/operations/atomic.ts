@@ -131,16 +131,22 @@ export class TempRegistry {
    * Unlink every outstanding temp file. Never throws: this runs from a signal
    * handler, where the only worse outcome than a leftover file is a crash that
    * leaves all of them.
+   *
+   * A path that could not be removed stays registered, so `paths()` afterwards
+   * is exactly the list of temp files this process created and left behind. The
+   * caller reports those; silently forgetting them would leave residue with
+   * nothing to point at it.
    */
   cleanup(): string[] {
     const removed: string[] = [];
     for (const absolute of [...this.#paths]) {
       try {
         fs.unlinkSync(absolute);
-        removed.push(absolute);
-      } catch {
-        // Already gone, or not ours to remove. Either way there is nothing to do.
+      } catch (error) {
+        // Already gone counts as removed. Anything else stays on the list.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') continue;
       }
+      removed.push(absolute);
       this.#paths.delete(absolute);
     }
     return removed;
@@ -178,8 +184,10 @@ export async function writeCandidate(
   try {
     await fsp.rename(temp, absTarget);
   } catch (error) {
-    await discard(temp, options.registry);
-    throw new Error(`could not put the new bytes in place at ${absTarget}: ${messageOf(error)}`);
+    const leftover = await discard(temp, options.registry);
+    throw new Error(
+      `could not put the new bytes in place at ${absTarget}: ${messageOf(error)}${leftover}`,
+    );
   }
   options.registry?.remove(temp);
   trace('rename', `${temp} -> ${absTarget}`);
@@ -480,12 +488,13 @@ async function writeTemp(absTarget: string, buffer: Buffer, options: WriteOption
     handle = undefined;
   } catch (error) {
     if (handle !== undefined) await handle.close().catch(() => undefined);
-    await discard(temp, options.registry);
-    throw new Error(`could not stage the new bytes for ${absTarget}: ${messageOf(error)}`);
+    const leftover = await discard(temp, options.registry);
+    throw new Error(`could not stage the new bytes for ${absTarget}: ${messageOf(error)}${leftover}`);
   }
 
   trace('temp-write', temp);
   abortIf('temp-write');
+  await stall();
   return temp;
 }
 
@@ -512,14 +521,25 @@ async function syncDirectory(directory: string): Promise<void> {
   }
 }
 
-/** Remove a temp file that is not going to be used, without masking the real error. */
-async function discard(temp: string, registry?: TempRegistry): Promise<void> {
+/**
+ * Remove a temp file that is not going to be used, without masking the real
+ * error. Returns a phrase naming the leftover when it could not be removed.
+ *
+ * A discard that itself fails is rare and worth saying out loud: the file is
+ * disposable, but only somebody looking at the tree can delete it now. It stays
+ * registered so the end-of-run cleanup retries it, and so it is still listed if
+ * that retry fails too.
+ */
+async function discard(temp: string, registry?: TempRegistry): Promise<string> {
   try {
     await fsp.unlink(temp);
-  } catch {
-    // Nothing to do: it either never existed or is already gone.
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return `; ${temp} was left behind and could not be removed either (${messageOf(error)})`;
+    }
   }
   registry?.remove(temp);
+  return '';
 }
 
 function messageOf(error: unknown): string {
@@ -547,6 +567,12 @@ function messageOf(error: unknown): string {
  *     aborts between the fsync and the rename, the one moment temp residue is
  *     possible. `first-rename` aborts between the two halves of a case-only
  *     rename, the one moment an image exists only under its interim name.
+ *
+ *   RASTERWRIGHT_STALL_MS=<n>
+ *     Waits `n` milliseconds at that same moment, so a test can deliver SIGINT
+ *     while a write is genuinely in flight rather than guessing at the timing.
+ *     Sitting beside `abortIf` is the point: both hooks mark the one instant
+ *     where a temp file exists and the rename has not happened.
  * ---------------------------------------------------------------------------
  */
 
@@ -562,4 +588,10 @@ function trace(step: string, detail: string): void {
 
 function abortIf(step: string): void {
   if (process.env.RASTERWRIGHT_ABORT_AFTER === step) process.abort();
+}
+
+async function stall(): Promise<void> {
+  const milliseconds = Number(process.env.RASTERWRIGHT_STALL_MS ?? '');
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

@@ -1,0 +1,15 @@
+# Format conversion, end to end.
+#
+# Every governed image has to end up as WebP, so `logo.png` and `photo.jpg` are
+# both re-encoded and renamed while `already.webp` is left alone. `logo.png`
+# carries real transparency, which the conversion has to preserve: WebP can
+# hold it, so there is no reason for a single pixel of it to be lost.
+#
+# After one run every file matches `format: webp` and the project is compliant,
+# which makes this the project the strict idempotence procedure runs against.
+version: 1
+
+rules:
+  "assets/**/*.{jpg,jpeg,png,webp}":
+    format: webp
+    maxWidth: 1200

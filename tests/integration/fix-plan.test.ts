@@ -31,23 +31,23 @@ function ops(plan: FilePlan): PlannedOperation['op'][] {
 }
 
 describe('fix without --dry-run', () => {
-  it('refuses to run and says what to do instead', async () => {
-    // Deliberately not a silent alias for --dry-run. Making the dangerous
-    // command quietly safe teaches people to type the dangerous command.
+  it('refuses outside a git repository, where an overwrite has no undo', async () => {
+    // `copyProject` copies into the system temp directory, which is outside any
+    // repository, so this is the refusal rather than a run that found nothing.
     const root = copyProject('mixed');
     const result = await runCli(['fix'], root);
 
     expect(result.code).toBe(2);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toMatch(/fix execution is not implemented yet/);
-    expect(result.stderr).toMatch(/--dry-run/);
+    expect(result.stderr).toMatch(/not inside a git repository/);
+    expect(result.stderr).toMatch(/--no-git/);
   });
 
-  it('refuses even when given rename permission', async () => {
+  it('refuses the same way when given rename permission', async () => {
     const root = copyProject('mixed');
     const result = await runCli(['fix', '--allow-renames'], root);
     expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/not implemented yet/);
+    expect(result.stderr).toMatch(/not inside a git repository/);
   });
 });
 
@@ -156,7 +156,6 @@ describe('human plan', () => {
     const { stdout } = await runCli(['fix', '--dry-run'], root);
 
     expect(stdout).toMatch(/Nothing was written\. This is a plan, not a run\./);
-    expect(stdout).toMatch(/Executing a plan is not implemented yet\./);
   });
 
   it('totals what would happen', async () => {

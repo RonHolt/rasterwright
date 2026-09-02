@@ -1,3 +1,4 @@
+import { INDENT, dimensions, plural, row } from './common.js';
 import { formatBytes } from '../../utils/bytes.js';
 import type { FilePlan, FixPlanReport, PlannedOperation } from '../../types.js';
 
@@ -13,9 +14,6 @@ import type { FilePlan, FixPlanReport, PlannedOperation } from '../../types.js';
  * encoded anything, so an encode against a byte ceiling prints a target and the
  * fact that the outcome has to be verified, never a predicted size.
  */
-
-const INDENT = '    ';
-const LABEL_COLUMN = 14;
 
 export function renderPlanJson(report: FixPlanReport, diagnostics: string[]): string {
   return JSON.stringify({ ...report, diagnostics }, null, 2);
@@ -107,7 +105,20 @@ function labelFor(plan: FilePlan): string {
   return 'reason';
 }
 
-function renderOperation(operation: PlannedOperation): string[] {
+/**
+ * One operation as a block of labelled rows.
+ *
+ * Exported because the fix report describes exactly the operations the plan
+ * described, and a second description of the same five operations would drift
+ * from this one the first time either was touched.
+ *
+ * `searched` is the one thing the two reports cannot say the same way. A plan
+ * describes a quality band it *would* search; a run that already happened
+ * encoded at exactly one quality, and printing "searched down to 40 if needed"
+ * over a finished result would describe work that did not occur. The fix
+ * renderer passes `false` and gets the single number.
+ */
+export function renderOperation(operation: PlannedOperation, searched = true): string[] {
   switch (operation.op) {
     case 'autoOrient':
       return [
@@ -137,7 +148,7 @@ function renderOperation(operation: PlannedOperation): string[] {
         lines.push(
           row(
             'quality',
-            operation.maxBytes === undefined
+            operation.maxBytes === undefined || !searched
               ? `${operation.quality.start}`
               : `${operation.quality.start}, searched down to ${operation.quality.floor} if needed`,
           ),
@@ -169,19 +180,6 @@ const FORMAT_LABEL = { jpeg: 'JPEG', png: 'PNG', webp: 'WebP' } as const;
 function extensionOf(filePath: string): string {
   const index = filePath.lastIndexOf('.');
   return index === -1 ? filePath : filePath.slice(index);
-}
-
-function dimensions({ width, height }: { width: number; height: number }): string {
-  return `${width}x${height}`;
-}
-
-/** `label   value`, wrapping to a second line rather than colliding. */
-function row(label: string, value: string): string {
-  return label.padEnd(LABEL_COLUMN) + value;
-}
-
-function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
 
 function renderSummary(report: FixPlanReport): string[] {
@@ -233,7 +231,6 @@ function renderSummary(report: FixPlanReport): string[] {
       'can surface conflicts an earlier run had no way to report.',
     );
   }
-  lines.push('Executing a plan is not implemented yet.');
 
   return lines;
 }

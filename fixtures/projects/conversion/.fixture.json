@@ -1,0 +1,7 @@
+{
+  "images": {
+    "assets/logo.png": "transparent.png",
+    "assets/photo.jpg": "compliant.jpg",
+    "assets/already.webp": "sample.webp"
+  }
+}
