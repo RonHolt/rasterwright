@@ -7,7 +7,7 @@ Product scope lives in `03`, architecture in `04`, user-facing behaviour in
 
 ## Current state
 
-- HEAD: `c39f2eb test: close the audit findings before human validation`
+- HEAD: `972bf80 test: close the audit findings before human validation`
   contract`, which is the packaging and agent-docs work.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
