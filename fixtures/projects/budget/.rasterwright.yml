@@ -1,0 +1,29 @@
+# Rasterwright fixture project: byte budgets, and the four ways they end.
+# Byte units are 1024-based: 200kb == 204800 bytes.
+version: 1
+
+defaults:
+  stripMetadata: true
+
+rules:
+  # Reachable only at a reduced quality: the search has to run and succeed.
+  "assets/*.jpg":
+    maxBytes: 200kb
+
+  # Two files, one rule. One is far under the ceiling and is never opened for
+  # writing; the other needs a search and must keep its transparency.
+  "assets/*.webp":
+    maxBytes: 150kb
+
+  # Lossless, and incompressible. There is no dial to turn, so this fails.
+  "assets/*.png":
+    maxBytes: 200kb
+
+  # Below anything the quality floor can produce: the search runs out of room.
+  "assets/impossible/*.jpg":
+    maxBytes: 20kb
+
+  # The resize does the work; the start quality already fits afterwards.
+  "assets/resized/*.jpg":
+    maxWidth: 300
+    maxBytes: 100kb

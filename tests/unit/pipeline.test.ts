@@ -5,7 +5,11 @@ import { describe, expect, it } from 'vitest';
 
 import { evaluate } from '../../src/policy/evaluate.js';
 import { planFile } from '../../src/operations/plan.js';
-import { renderCandidate } from '../../src/operations/pipeline.js';
+import {
+  renderCandidate,
+  searchQuality,
+  type RenderedCandidate,
+} from '../../src/operations/pipeline.js';
 import { inspectBuffer } from '../../src/scanner/inspect.js';
 import { FIXTURE_IMAGES } from '../helpers/project.js';
 import type {
@@ -40,6 +44,7 @@ interface Rendered {
   plan: FilePlan;
   source: ImageInfo;
   candidate: Buffer;
+  encoded: RenderedCandidate;
   output: ImageInfo;
 }
 
@@ -56,8 +61,14 @@ async function render(label: string, bytes: Buffer, body: RuleBody): Promise<Ren
   if (plan.status !== 'planned') {
     throw new Error(`expected a plan for ${label}, got ${plan.status}: ${plan.reasons.join('; ')}`);
   }
-  const candidate = await renderCandidate(bytes, plan, source);
-  return { plan, source, candidate, output: await infoFor(plan.targetPath, candidate) };
+  const encoded = await renderCandidate(bytes, plan, source);
+  return {
+    plan,
+    source,
+    candidate: encoded.buffer,
+    encoded,
+    output: await infoFor(plan.targetPath, encoded.buffer),
+  };
 }
 
 function fixture(name: string): Buffer {
@@ -332,19 +343,269 @@ describe('determinism', () => {
   });
 });
 
-describe('what the pipeline refuses to do', () => {
-  it('refuses a plan whose encode is driven by a byte budget', async () => {
-    // The quality search does not exist yet. Failing after a wasted encode
-    // would read as a bug rather than as a stated limitation.
-    const bytes = fixture('overbudget.jpg');
-    const source = await infoFor('heavy.jpg', bytes);
-    const plan = planFile(evaluate(source, rule({ maxBytes: 20_000 })), ALLOW_RENAMES);
+/**
+ * The search, against a stubbed encoder.
+ *
+ * Nothing here decodes an image. The assertions are about the algorithm - which
+ * qualities it probes, which one it keeps, and what it reports when none fit -
+ * and a synthetic size function is the only way to state them exactly,
+ * including for a curve no real encoder is guaranteed not to produce.
+ */
+describe('searchQuality', () => {
+  /** An encoder whose output size is `sizeAt(quality)` bytes. Records every probe. */
+  function encoder(sizeAt: (quality: number) => number) {
+    const probes: number[] = [];
+    const encode = async (quality: number): Promise<Buffer> => {
+      probes.push(quality);
+      return Buffer.alloc(sizeAt(quality));
+    };
+    return { probes, encode };
+  }
 
-    const encode = plan.operations.find((operation) => operation.op === 'encode');
-    expect(encode?.budgetDriven).toBe(true);
-    await expect(renderCandidate(bytes, plan, source)).rejects.toThrow(/byte budget/);
+  /** Monotone and strictly decreasing: 100 bytes per quality point. */
+  const linear = (quality: number): number => quality * 100;
+
+  it('encodes once at the start quality when there is no ceiling at all', async () => {
+    const { probes, encode } = encoder(linear);
+    const result = await searchQuality({ start: 82, floor: 40 }, undefined, encode);
+
+    expect(probes).toEqual([82]);
+    expect(result.quality).toEqual({
+      start: 82,
+      chosen: 82,
+      floor: 40,
+      searched: false,
+      attempts: 1,
+    });
   });
 
+  it('encodes once when the start quality already fits', async () => {
+    const { probes, encode } = encoder(linear);
+    const result = await searchQuality({ start: 82, floor: 40 }, 8_200, encode);
+
+    expect(probes).toEqual([82]);
+    expect(result.quality.searched).toBe(false);
+    expect(result.buffer.length).toBe(8_200);
+  });
+
+  it('keeps the highest quality that fits', async () => {
+    const { probes, encode } = encoder(linear);
+    // 6,150 bytes admits quality 61 and nothing above it.
+    const result = await searchQuality({ start: 82, floor: 40 }, 6_150, encode);
+
+    expect(result.quality.chosen).toBe(61);
+    expect(result.quality.searched).toBe(true);
+    expect(result.buffer.length).toBe(6_100);
+    expect(probes.every((quality) => quality >= 40 && quality <= 82)).toBe(true);
+    expect(probes.slice(1).every((quality) => quality <= 81)).toBe(true);
+  });
+
+  it('accepts a candidate exactly on the ceiling and refuses one byte over it', async () => {
+    // The difference between `<=` and `<`, which is the whole meaning of a
+    // ceiling and is not something to leave to a reading of the code.
+    const exact = await searchQuality({ start: 82, floor: 40 }, 6_100, encoder(linear).encode);
+    expect(exact.quality.chosen).toBe(61);
+
+    const over = await searchQuality({ start: 82, floor: 40 }, 6_099, encoder(linear).encode);
+    expect(over.quality.chosen).toBe(60);
+  });
+
+  it('never probes below the floor, and reports the floor when nothing fits', async () => {
+    const { probes, encode } = encoder(linear);
+    const result = await searchQuality({ start: 82, floor: 40 }, 1_000, encode);
+
+    expect(Math.min(...probes)).toBe(40);
+    expect(result.quality.chosen).toBe(40);
+    expect(result.buffer.length).toBe(4_000);
+    expect(result.quality.searched).toBe(true);
+  });
+
+  it('probes once when the floor equals the start, and reports that probe', async () => {
+    // A legal config: `parseQuality` refuses only `floor > start`. The range
+    // [floor, start - 1] is then empty, so the loop body never runs and an
+    // implementation assuming at least one iteration would report nothing.
+    const { probes, encode } = encoder(linear);
+    const result = await searchQuality({ start: 60, floor: 60 }, 1_000, encode);
+
+    expect(probes).toEqual([60]);
+    expect(result.quality).toEqual({
+      start: 60,
+      chosen: 60,
+      floor: 60,
+      searched: false,
+      attempts: 1,
+    });
+  });
+
+  it('reports the smallest measured probe when a tiny ceiling admits nothing', async () => {
+    const { encode } = encoder(linear);
+    const result = await searchQuality({ start: 82, floor: 40 }, 1, encode);
+
+    expect(result.buffer.length).toBe(4_000);
+    expect(result.quality.chosen).toBe(40);
+  });
+
+  it('accepts only probes it measured under the ceiling, monotone or not', async () => {
+    // Quality 60 is the search's *first* probe under this band and ceiling, and
+    // it is deliberately larger than its neighbours. An implementation that
+    // trusted the binary-search invariant would take it and write bytes over
+    // the ceiling; the property is that whatever comes back genuinely fits.
+    const bumpy = (quality: number): number => (quality === 60 ? 99_999 : quality * 100);
+    const { probes, encode } = encoder(bumpy);
+    const result = await searchQuality({ start: 82, floor: 40 }, 6_150, encode);
+
+    expect(probes).toContain(60);
+    expect(result.quality.chosen).not.toBe(60);
+    expect(result.buffer.length).toBeLessThanOrEqual(6_150);
+    expect(bumpy(result.quality.chosen)).toBe(result.buffer.length);
+  });
+
+  it('can miss a fitting quality on a non-monotone curve, and never writes over the ceiling', async () => {
+    // The honest cost of a binary search over a curve that is not monotone. The
+    // inversion at 60 makes the search abandon the whole upper half, so it
+    // returns 59 where 61 also fits. A missed optimization, never a wrong
+    // write, and worth pinning so nobody "fixes" it into an unsound search.
+    const bumpy = (quality: number): number => (quality === 60 ? 99_999 : quality * 100);
+    const result = await searchQuality({ start: 82, floor: 40 }, 6_150, encoder(bumpy).encode);
+
+    expect(result.quality.chosen).toBe(59);
+    expect(bumpy(61)).toBeLessThanOrEqual(6_150);
+  });
+
+  it('can report a failure where an isolated fitting quality existed', async () => {
+    // The worst case of the same trade, stated out loud: only quality 70 fits,
+    // the search probes 60 first, finds it over, and abandons the half that
+    // contains 70. The failure is honest about what it measured and the
+    // original is left alone, which is the property that matters. Fixing this
+    // would mean a linear scan of the whole band on every over-budget file.
+    const size = (quality: number): number => (quality === 70 ? 5_000 : 9_000);
+    const result = await searchQuality({ start: 82, floor: 40 }, 6_000, encoder(size).encode);
+
+    expect(result.buffer.length).toBeGreaterThan(6_000);
+    expect(size(70)).toBeLessThanOrEqual(6_000);
+  });
+
+  it('never needs more than eight encodes, over the whole legal quality range', async () => {
+    // 1..100 is the widest band the schema allows, and a binary search over 99
+    // values needs seven probes plus the initial one. Asserted as an invariant
+    // rather than enforced as a cap: a cap that stopped early would make the
+    // chosen quality depend on the width of the band, and the run would stop
+    // being deterministic in the way this phase promises.
+    for (const ceiling of [1, 5_000, 9_999, 10_000]) {
+      const { encode } = encoder(linear);
+      const result = await searchQuality({ start: 100, floor: 1 }, ceiling, encode);
+      expect(result.quality.attempts, `ceiling ${ceiling}`).toBeLessThanOrEqual(8);
+    }
+  });
+});
+
+describe('the byte-budget search over real encodes', () => {
+  it('lands on the highest quality that fits, and the next one up does not', async () => {
+    const { encoded, output } = await render('overbudget.jpg', fixture('overbudget.jpg'), {
+      maxBytes: 200 * 1024,
+    });
+
+    expect(encoded.quality?.searched).toBe(true);
+    expect(encoded.bytes).toBeLessThanOrEqual(200 * 1024);
+    expect(output.bytes).toBe(encoded.bytes);
+
+    // The search found the true maximum, not merely something that fits: one
+    // quality point higher is over the ceiling.
+    const chosen = encoded.quality?.chosen ?? 0;
+    const higher = await sharp(fixture('overbudget.jpg'))
+      .jpeg({ quality: chosen + 1, mozjpeg: true, progressive: true })
+      .toBuffer();
+    expect(higher.length).toBeGreaterThan(200 * 1024);
+  });
+
+  it('stays inside the band and inside the attempt budget', async () => {
+    const { encoded } = await render('overbudget.jpg', fixture('overbudget.jpg'), {
+      maxBytes: 200 * 1024,
+    });
+
+    const quality = encoded.quality;
+    expect(quality?.floor).toBe(40);
+    expect(quality?.chosen).toBeGreaterThanOrEqual(40);
+    expect(quality?.chosen).toBeLessThan(82);
+    expect(quality?.attempts).toBeLessThanOrEqual(8);
+  });
+
+  it('encodes exactly once when the plan has no byte ceiling', async () => {
+    const { encoded } = await render('oversized.jpg', fixture('oversized.jpg'), { maxWidth: 800 });
+
+    expect(encoded.quality).toEqual({
+      start: 82,
+      chosen: 82,
+      floor: 40,
+      searched: false,
+      attempts: 1,
+    });
+  });
+
+  it('applies the resize once, so every probe encodes the resized image', async () => {
+    const { encoded, output } = await render('overbudget.jpg', fixture('overbudget.jpg'), {
+      maxWidth: 300,
+      maxBytes: 100 * 1024,
+    });
+
+    expect([output.width, output.height]).toEqual([300, 300]);
+    expect(encoded.bytes).toBeLessThanOrEqual(100 * 1024);
+    // The downscale alone brings it well under, so the start quality is kept.
+    expect(encoded.quality?.searched).toBe(false);
+  });
+
+  it('keeps meaningful transparency through a WebP search', async () => {
+    const { source, encoded, output } = await render(
+      'noisy-alpha.webp',
+      fixture('noisy-alpha.webp'),
+      { maxBytes: 150 * 1024 },
+    );
+
+    expect(source).toMatchObject({ hasAlpha: true, isOpaque: false });
+    expect(encoded.quality?.searched).toBe(true);
+    expect(encoded.bytes).toBeLessThanOrEqual(150 * 1024);
+    expect(output).toMatchObject({ format: 'webp', hasAlpha: true, isOpaque: false });
+  });
+
+  it('re-encodes a PNG losslessly, once, and reports no quality at all', async () => {
+    const { encoded } = await render('noisy.png', fixture('noisy.png'), { maxBytes: 200 * 1024 });
+
+    expect(encoded.format).toBe('png');
+    expect(encoded.quality).toBeUndefined();
+    // Incompressible: the maximum-effort re-encode buys nothing, which is
+    // exactly why the executor has to fail this file rather than write it.
+    expect(encoded.bytes).toBeGreaterThan(200 * 1024);
+  });
+
+  it('hands back the smallest probe when nothing fits, with the quality that made it', async () => {
+    const { encoded, plan } = await render('overbudget.jpg', fixture('overbudget.jpg'), {
+      maxBytes: 20 * 1024,
+    });
+
+    // The pipeline decides nothing: it returns the best it could do and lets
+    // verification refuse it. Anything else would put the decision to write in
+    // two places.
+    expect(plan.status).toBe('planned');
+    expect(encoded.quality?.chosen).toBe(40);
+    expect(encoded.bytes).toBeGreaterThan(20 * 1024);
+  });
+
+  it('picks the same quality and the same bytes on a second run', async () => {
+    for (const [name, body] of [
+      ['overbudget.jpg', { maxBytes: 200 * 1024 }],
+      ['noisy-alpha.webp', { maxBytes: 150 * 1024 }],
+      ['noisy.png', { maxBytes: 200 * 1024 }],
+    ] as [string, RuleBody][]) {
+      const first = await render(name, fixture(name), body);
+      const second = await render(name, fixture(name), body);
+
+      expect(second.encoded.quality, name).toEqual(first.encoded.quality);
+      expect(second.candidate.equals(first.candidate), name).toBe(true);
+    }
+  });
+});
+
+describe('what the pipeline refuses to do', () => {
   it('refuses a 16-bit source, whose precision an encode would halve', async () => {
     // The planner already reports these as unsupported. This is the check on
     // the other side of that boundary: it is the planner that would have to

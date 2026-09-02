@@ -4,8 +4,10 @@ import { FORMAT_EXTENSION } from '../config/resolve.js';
 import { DEFAULT_QUALITY } from '../config/schema.js';
 import { EXTENSION_FORMATS } from '../policy/rules/extension.js';
 import { hasMeaningfulAlpha } from '../policy/rules/types.js';
+import { formatBytes } from '../utils/bytes.js';
 import type {
   CheckName,
+  EffectiveRule,
   EncodeOperation,
   FilePlan,
   FileResult,
@@ -49,9 +51,35 @@ import type {
  * exists. Those belong to a batch preflight over the whole plan set, which runs
  * after this module and can reject what it produces: see `plan-set.ts` and 04,
  * sections 15.9 and 16. A plan is not executable until preflight has seen it.
+ *
+ * ## The rule that governs the output, not the input
+ *
+ * A format conversion moves a file, and the path it moves to can be governed by
+ * a different rule. Verification already evaluates the candidate against the
+ * *target* path's policy, so a plan built entirely from the source rule would
+ * optimize for a ceiling nobody is going to check and miss the one that will be:
+ * the search would either chase a budget the target does not have, or report a
+ * reachable ceiling as unfixable. `ruleFor` closes that gap. See 04 section 19.12.
  */
 
-export function planFile(file: FileResult, permissions: FixPermissions): FilePlan {
+export interface PlanOptions {
+  /**
+   * The effective rule governing an arbitrary repo-relative path.
+   *
+   * Supplied by the run as `resolver.resolve`, which is a deterministic pure
+   * function of the loaded config, so handing it in keeps this module as pure
+   * as it was: no filesystem, no Sharp, same inputs and the same plan every
+   * time. Omitted, the source rule governs everything, which is right for any
+   * plan that does not move the file.
+   */
+  ruleFor?: (path: string) => EffectiveRule;
+}
+
+export function planFile(
+  file: FileResult,
+  permissions: FixPermissions,
+  options: PlanOptions = {},
+): FilePlan {
   const warnings = checksOf(file, 'warning');
   const base = {
     path: file.path,
@@ -113,6 +141,16 @@ export function planFile(file: FileResult, permissions: FixPermissions): FilePla
   const has = (check: CheckName): boolean => errorChecks.includes(check);
   const operations: PlannedOperation[] = [];
 
+  // The output format, and therefore the output path, come from the source
+  // rule: that is the rule that says what this file must become. Everything the
+  // *output* has to satisfy comes from wherever the output lands, which is what
+  // `destination` resolves. Both are needed before any operation is built,
+  // because the size limits are among the things that move.
+  const targetFormat = body.format ?? image.format;
+  const convertsFormat = image.format !== targetFormat;
+  const targetPath = pathForFormat(file.path, targetFormat);
+  const destination = destinationFor(body, targetPath !== file.path, options.ruleFor?.(targetPath));
+
   // 1. Orientation first: it changes the dimensions everything else works from.
   if (has('orientation')) {
     operations.push({
@@ -124,8 +162,23 @@ export function planFile(file: FileResult, permissions: FixPermissions): FilePla
   }
 
   // 2. Geometry. Down only, and rounded down, so the result cannot land over a
-  //    limit and give the next run something to do.
-  if (has('maxWidth') || has('maxHeight')) operations.push(resize(image, body));
+  //    limit and give the next run something to do. The limits are the tighter
+  //    of where the file is and where it is going, so the output is compliant
+  //    under both and the source's own violation is still resolved.
+  //
+  //    A limit that only the *destination* imposes rides along with a rewrite
+  //    that is already happening; it never causes one. A rename that touches no
+  //    pixels must stay that way: re-encoding a file to satisfy a limit it is
+  //    only about to inherit would spend generation loss on a filename change,
+  //    and on a 16-bit source it would turn the one plan that works into an
+  //    unsupported one, leaving the file permanently mis-named with no remedy.
+  const limits = tighterLimits(body, destination.body);
+  const resizesForSource = has('maxWidth') || has('maxHeight');
+  const rewritesAnyway = resizesForSource || has('orientation') || has('colorSpace') ||
+    convertsFormat || has('maxBytes');
+  if (resizesForSource || (rewritesAnyway && exceeds(image, limits))) {
+    operations.push(resize(image, limits));
+  }
 
   // 3. Colour. After geometry, before the encoder.
   if (has('colorSpace')) {
@@ -134,8 +187,6 @@ export function planFile(file: FileResult, permissions: FixPermissions): FilePla
 
   // 4. Output. A file is written at most once, so every pixel-level reason to
   //    rewrite it collapses into this single encode.
-  const targetFormat = body.format ?? image.format;
-  const convertsFormat = image.format !== targetFormat;
   const rewrites = operations.length > 0 || convertsFormat || has('maxBytes');
   // Under `autoOrient: false` the orientation flag is policy, not a defect, and
   // no `autoOrient` operation is planned. But an encoder drops metadata by
@@ -145,7 +196,7 @@ export function planFile(file: FileResult, permissions: FixPermissions): FilePla
   // the encode carries the flag through instead.
   const preservesOrientation = image.orientation !== 1 && !has('orientation');
   const encoding = rewrites
-    ? encode(image, body, targetFormat, has('maxBytes'), preservesOrientation)
+    ? encode(image, body, destination.body, targetFormat, has('maxBytes'), preservesOrientation)
     : undefined;
 
   // Sharp's encoders write 8 bits per channel, so re-encoding a 16-bit source
@@ -165,7 +216,6 @@ export function planFile(file: FileResult, permissions: FixPermissions): FilePla
   if (encoding !== undefined) operations.push(encoding);
 
   // 5. Filename last, so no output has to be reopened under a new name.
-  const targetPath = pathForFormat(file.path, targetFormat);
   const rename: PlannedOperation | undefined =
     targetPath === file.path
       ? undefined
@@ -207,8 +257,75 @@ export function planFile(file: FileResult, permissions: FixPermissions): FilePla
     normalizedDuringRewrite:
       encoding !== undefined && encoding.stripMetadata && warnings.includes('metadata') ? ['metadata'] : [],
     requiresVerification: encoding?.outcomeRequiresVerification ?? false,
-    notes: notesFor(file, image, encoding, rename !== undefined),
+    notes: notesFor(file, image, encoding, rename !== undefined, destination, limits, body),
   };
+}
+
+/**
+ * The policy the *output* has to satisfy.
+ *
+ * A file that stays where it is answers to the rule it already matched. A file
+ * a format conversion moves answers to whatever governs the path it moves to,
+ * which is exactly what `verifyCandidate` evaluates it against. Getting this
+ * wrong is not a cosmetic mismatch: the byte-budget search would optimize
+ * against a ceiling nobody checks and either miss a reachable one or chase a
+ * ceiling that does not apply.
+ *
+ * A target path that matches no rule is ungoverned, and an ungoverned file has
+ * no ceiling at all - not the source's, which stopped applying the moment the
+ * file left it. The plan says so rather than quietly carrying the old number.
+ */
+interface Destination {
+  /** What the output must satisfy. The source body when nothing moves. */
+  body: RuleBody;
+  /** True when the output is governed by a different path's rules. */
+  moved: boolean;
+  /** True when at least one rule glob matches the output path. */
+  governed: boolean;
+  /** The glob that supplied the output's `maxBytes`, for the note that names it. */
+  ceilingGlob: string | undefined;
+}
+
+function destinationFor(
+  body: RuleBody,
+  moves: boolean,
+  target: EffectiveRule | undefined,
+): Destination {
+  if (!moves || target === undefined) {
+    return { body, moved: false, governed: true, ceilingGlob: undefined };
+  }
+  const governed = target.matchedGlobs.length > 0;
+  return {
+    body: governed ? target.body : {},
+    moved: true,
+    governed,
+    ceilingGlob: governed ? target.sources.maxBytes : undefined,
+  };
+}
+
+/** The stricter of two optional limits, or whichever one exists. */
+function tighter(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.min(a, b);
+}
+
+/** Size limits the output must satisfy at both ends of a move. */
+function tighterLimits(source: RuleBody, destination: RuleBody): RuleBody {
+  const limits: RuleBody = {};
+  const width = tighter(source.maxWidth, destination.maxWidth);
+  const height = tighter(source.maxHeight, destination.maxHeight);
+  if (width !== undefined) limits.maxWidth = width;
+  if (height !== undefined) limits.maxHeight = height;
+  return limits;
+}
+
+/** Whether the image is over either limit, in displayed dimensions. */
+function exceeds(image: ImageInfo, limits: RuleBody): boolean {
+  return (
+    (limits.maxWidth !== undefined && image.width > limits.maxWidth) ||
+    (limits.maxHeight !== undefined && image.height > limits.maxHeight)
+  );
 }
 
 /**
@@ -244,9 +361,19 @@ function resize(image: ImageInfo, body: RuleBody): ResizeOperation {
 /** Formats with a quality dial. PNG is lossless and has none. */
 const LOSSY: ReadonlySet<ImageFormat> = new Set<ImageFormat>(['jpeg', 'webp']);
 
+/**
+ * The single encode.
+ *
+ * `body` is the source rule and decides *how* to write the file: the format,
+ * whether metadata is dropped, whether the orientation flag is carried through.
+ * `destination` is the rule governing the output path and decides *what the
+ * output must satisfy*: the byte ceiling, and the quality band the search runs
+ * over to meet it. They are the same object unless a conversion moves the file.
+ */
 function encode(
   image: ImageInfo,
   body: RuleBody,
+  destination: RuleBody,
   format: ImageFormat,
   budgetDriven: boolean,
   preservesOrientation: boolean,
@@ -264,10 +391,10 @@ function encode(
     lossyReencode: LOSSY.has(image.format) && LOSSY.has(format),
     // A byte ceiling is the only thing planning cannot answer, because
     // answering it means encoding.
-    outcomeRequiresVerification: body.maxBytes !== undefined,
+    outcomeRequiresVerification: destination.maxBytes !== undefined,
   };
-  if (body.maxBytes !== undefined) operation.maxBytes = body.maxBytes;
-  if (LOSSY.has(format)) operation.quality = body.quality ?? { ...DEFAULT_QUALITY };
+  if (destination.maxBytes !== undefined) operation.maxBytes = destination.maxBytes;
+  if (LOSSY.has(format)) operation.quality = destination.quality ?? { ...DEFAULT_QUALITY };
   return operation;
 }
 
@@ -290,8 +417,46 @@ function notesFor(
   image: ImageInfo,
   encoding: EncodeOperation | undefined,
   renames: boolean,
+  destination: Destination,
+  limits: RuleBody,
+  body: RuleBody,
 ): string[] {
   const notes: string[] = [];
+
+  // The rename moves the file under different policy, and the numbers the
+  // encode has to hit came from there rather than from the rule the user was
+  // looking at. Saying which glob supplied them is the difference between a
+  // ceiling that looks wrong and one that is explicable.
+  if (destination.moved && encoding !== undefined) {
+    if (!destination.governed) {
+      notes.push(
+        'after the rename this file matches no rule, so no byte ceiling applies to the encode',
+      );
+    } else if (destination.body.maxBytes !== body.maxBytes) {
+      const glob = destination.ceilingGlob ?? 'the target rule';
+      notes.push(
+        destination.body.maxBytes === undefined
+          ? `after the rename this file is governed by ${glob}, which sets no maxBytes, so no ceiling applies`
+          : `the ${formatBytes(destination.body.maxBytes)} ceiling comes from ${glob}, which governs the ` +
+            'file after the rename, not from the rule matching it now',
+      );
+    }
+  }
+
+  // A limit the file is not currently breaking, imposed by where it is going.
+  // Without this the resize would look unmotivated in the report.
+  if (
+    destination.moved &&
+    destination.governed &&
+    renames &&
+    encoding !== undefined &&
+    tighterThanSource(limits, body)
+  ) {
+    notes.push(
+      'the resize target comes from the rule governing the file after the rename, which is ' +
+        'stricter than the one matching it now',
+    );
+  }
 
   // Preserving the flag means writing a minimal EXIF block into a file that may
   // have had none. That is a visible consequence of a rewrite the user did not
@@ -308,7 +473,8 @@ function notesFor(
   // percent and nothing more, and palette quantization is deliberately not in
   // v0 because it destroys photographs. Say so now rather than failing later
   // with no explanation.
-  if (encoding?.format === 'png' && encoding.budgetDriven) {
+  const newCeiling = encoding?.maxBytes !== undefined && (encoding.budgetDriven || destination.moved);
+  if (encoding?.format === 'png' && newCeiling) {
     notes.push(
       'PNG is lossless, so the only lever is a maximum-effort re-encode; the ceiling may be unreachable',
     );
@@ -321,6 +487,14 @@ function notesFor(
   }
 
   return notes;
+}
+
+/** True when the merged limits are stricter than the source rule's own. */
+function tighterThanSource(limits: RuleBody, source: RuleBody): boolean {
+  return (
+    (limits.maxWidth !== undefined && limits.maxWidth !== source.maxWidth) ||
+    (limits.maxHeight !== undefined && limits.maxHeight !== source.maxHeight)
+  );
 }
 
 function checksOf(file: FileResult, severity: 'error' | 'warning'): CheckName[] {

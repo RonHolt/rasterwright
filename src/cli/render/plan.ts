@@ -1,6 +1,12 @@
 import { INDENT, dimensions, plural, row } from './common.js';
 import { formatBytes } from '../../utils/bytes.js';
-import type { FilePlan, FixPlanReport, PlannedOperation } from '../../types.js';
+import type {
+  EncodeOutcome,
+  FilePlan,
+  FixPlanReport,
+  PlannedOperation,
+  QualityBand,
+} from '../../types.js';
 
 /**
  * Human-readable and machine-readable `fix --dry-run` output.
@@ -106,19 +112,33 @@ function labelFor(plan: FilePlan): string {
 }
 
 /**
+ * How to render an operation that has already been executed.
+ *
+ * A plan describes a quality band it *would* search; a run that already
+ * happened has a number, and printing "searched down to 40 if needed" over a
+ * finished result would describe work that may not have occurred. The fix
+ * renderer passes this to get what the encoder actually did instead.
+ */
+export interface ExecutedEncode {
+  /** The encoder's own account of the run, when one happened. */
+  encoded?: EncodeOutcome;
+}
+
+/**
  * One operation as a block of labelled rows.
  *
  * Exported because the fix report describes exactly the operations the plan
  * described, and a second description of the same five operations would drift
  * from this one the first time either was touched.
  *
- * `searched` is the one thing the two reports cannot say the same way. A plan
- * describes a quality band it *would* search; a run that already happened
- * encoded at exactly one quality, and printing "searched down to 40 if needed"
- * over a finished result would describe work that did not occur. The fix
- * renderer passes `false` and gets the single number.
+ * Called with no second argument this is the prospective form, which is the
+ * plan report's. The fix report always passes one, even for a file nothing
+ * encoded: that is what keeps a skipped file's rows from claiming a search.
  */
-export function renderOperation(operation: PlannedOperation, searched = true): string[] {
+export function renderOperation(
+  operation: PlannedOperation,
+  executed?: ExecutedEncode,
+): string[] {
   switch (operation.op) {
     case 'autoOrient':
       return [
@@ -145,14 +165,7 @@ export function renderOperation(operation: PlannedOperation, searched = true): s
         );
       }
       if (operation.quality !== undefined) {
-        lines.push(
-          row(
-            'quality',
-            operation.maxBytes === undefined || !searched
-              ? `${operation.quality.start}`
-              : `${operation.quality.start}, searched down to ${operation.quality.floor} if needed`,
-          ),
-        );
+        lines.push(row('quality', qualityValue(operation.quality, operation.maxBytes, executed)));
       }
       if (operation.preserveAlpha) lines.push(row('transparency', 'preserve'));
       if (operation.preservesOrientation) {
@@ -173,6 +186,31 @@ export function renderOperation(operation: PlannedOperation, searched = true): s
       return lines;
     }
   }
+}
+
+/**
+ * The `quality` row, in whichever of its three forms applies.
+ *
+ *   `82`                          nothing to search, or nothing was searched
+ *   `82, searched down to 40 ...` a plan, describing a band it would search
+ *   `82 -> 72 (searched 40-81)`   a run that did search, and where it landed
+ *
+ * The third form is the only one that names two numbers, and it is printed only
+ * when two qualities were genuinely encoded.
+ */
+function qualityValue(
+  band: QualityBand,
+  maxBytes: number | undefined,
+  executed: ExecutedEncode | undefined,
+): string {
+  if (executed !== undefined) {
+    const quality = executed.encoded?.quality;
+    if (quality === undefined) return `${band.start}`;
+    if (!quality.searched) return `${quality.chosen}`;
+    return `${quality.start} -> ${quality.chosen} (searched ${quality.floor}-${quality.start - 1})`;
+  }
+  if (maxBytes === undefined) return `${band.start}`;
+  return `${band.start}, searched down to ${band.floor} if needed`;
 }
 
 const FORMAT_LABEL = { jpeg: 'JPEG', png: 'PNG', webp: 'WebP' } as const;

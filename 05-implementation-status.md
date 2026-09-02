@@ -7,13 +7,13 @@ behaviour in `README.md`; this file only records where the implementation is.
 
 ## Current state
 
-- HEAD: `9e7195f feat: execute deterministic image fixes`
-  work wiring the executor (phase 2b).
+- HEAD: `1211daf docs: record execution phase as complete in implementation status`,
+  plus uncommitted work implementing byte-budget execution.
 - Implemented commands: `check` (`--verbose`, `--json`), `fix --dry-run`
   (`--json`, `--allow-renames`), and `fix` (`--allow-renames`, `--json`,
-  `--no-git`, `--backup-dir`, `--concurrency`).
-- Not implemented: byte-budget execution, `review`, `init`.
-- Baseline: 566 tests across 19 files, `npm run typecheck` clean,
+  `--no-git`, `--backup-dir`, `--concurrency`). Byte budgets are enforced.
+- Not implemented: `review`, `init`.
+- Baseline: 618 tests across 19 files, `npm run typecheck` clean,
   `npm run build` clean.
 - Sharp pinned exactly at `0.35.4`.
 
@@ -27,14 +27,28 @@ behaviour in `README.md`; this file only records where the implementation is.
 | Batch plan preflight (`blocked` status, collisions fixture) | `7974008` |
 | Execution foundation, unwired (phase 2a) | `3c3076e` |
 | Execution wired (phase 2b) | `9e7195f` |
+| Byte-budget execution | uncommitted |
 
 ## Current phase
 
-**Byte-budget execution.** In-memory downward quality search for JPEG and
-WebP against `maxBytes` (start, binary search to floor, highest fitting
-quality, explicit failure below floor); PNG lossless max-effort attempt
-with explicit failure; budget-driven plans stop being skipped. Status:
-not started.
+**Byte-budget execution.** Done. `renderCandidate` builds the Sharp chain
+once and re-runs only the encoder: encode at `quality.start`, accept if it
+fits, otherwise binary-search `[floor, start - 1]` for the highest quality
+whose *measured* output fits. PNG gets one maximum-effort lossless attempt
+because it has no dial. Nothing that misses the ceiling is written: the
+pipeline hands its best attempt back and `verifyCandidate` refuses it, with
+a failure message naming the floor, the best size reached and the manual
+remedies. Budget-driven plans are no longer skipped, and `skipReasonFor`'s
+budget branch is gone.
+
+Review found one real bug in the first cut and it is fixed: the plan read
+`maxBytes` and `quality` from the rule matching the file's *current* path
+while verification evaluates the candidate against the rule matching its
+*target* path, so a format conversion that moved a file under another glob
+searched against the wrong ceiling. `planFile()` now takes an optional
+`ruleFor` resolver callback and stays pure. See `04` 19.12.
+
+Next: idempotence hardening tests (roadmap item 5).
 
 ## Non-negotiable invariants
 
@@ -64,15 +78,41 @@ not started.
 
 ## Recent decisions (not already in 04)
 
-- None beyond `04` sections 15, 16, 17 and 18.
+- None beyond `04` sections 15, 16, 17, 18 and 19.
 
 ## Known limitations
 
-- **Byte budgets are not enforced.** A plan whose encode exists to satisfy
-  `maxBytes` (`EncodeOperation.budgetDriven`) is `skipped` before anything is
-  encoded. A ceiling that merely also applies to a rewrite something else
-  required *is* enforced, and a candidate over it is `failed` with a message
-  saying the search does not exist yet. This is the next phase.
+- **A byte budget is met by quality alone.** There is no extra downscale and no
+  format fallback: the plan fixes the dimensions and the output format before
+  any encoding starts, and both would make those depend on encoder results. A
+  ceiling the quality floor cannot reach is an explicit failure naming the three
+  manual remedies. See `04` 19.8.
+- **A ceiling applies to every encode under its rule, not only budget-driven
+  ones.** A file being rewritten for some other reason under a rule that sets
+  `maxBytes` is also searched when the start quality overshoots, so it can land
+  at a lower quality and a smaller size than it did before this phase. Intended,
+  and a real change in output bytes. See `04` 19.11.
+- **The search costs a full decode per probe.** libvips re-decodes the source on
+  every `toBuffer()`. Measured at roughly 185 ms per probe on the worst fixture,
+  so about 1.1 s for a six-probe search. Decoding once to raw pixels would be
+  faster and would change the ICC handling path, so it is deliberately not done.
+  See `04` 19.7.
+- **A conversion is judged where it lands.** The `maxBytes` and `quality` the
+  encode uses come from the rule governing the *output* path, because that is
+  the rule verification applies. The source rule still decides `format`,
+  `colorSpace`, `stripMetadata` and `autoOrient`; size limits take the tighter
+  of the two. A limit only the destination imposes rides along with a rewrite
+  and never causes one, so a pixel-free rename stays pixel-free. A target path
+  matching no rule has no ceiling. See `04` 19.12.
+- **The search can miss a fitting quality on a non-monotone size curve**, and in
+  the worst case report a failure where one existed. It can never write bytes
+  over the ceiling. Measured over 20,000 synthetic curves: 314 missed optima, no
+  false failures, no over-ceiling writes. See `04` 19.3.
+- **Each probe copies the source buffer.** Sharp's `clone()` runs
+  `structuredClone` over its options, which for buffer input duplicates the
+  whole source: 457 KB per clone on `overbudget.jpg`. One clone is live at a
+  time, so peak memory is bounded, but churn scales as probes x source size x
+  concurrency. See `04` 19.7.
 - The case-only rename is unreachable from the planner today.
   `pathForFormat()` leaves the path alone when the current extension already
   denotes the target format (`plan.ts:283`), so `a.JPG` under `format: jpeg`
@@ -126,10 +166,14 @@ not started.
   because Sharp's encoders write 8 bits per channel. A rename-only plan on one
   is still performed. See `04` 17.12 and 18.1.
 - An indexed (palette) PNG is re-encoded truecolour and can come out roughly
-  three times its original size. `palette: true` is only lossless while the
-  colour count is unchanged, which a resize breaks, so the byte-budget phase
-  has to decide this rather than the pipeline. It will likely want a palette
-  flag on `ImageInfo`. See `04` 17.18.
+  three times its original size, and a byte budget on one has no answer beyond
+  the explicit failure. The byte-budget phase decided *not* to add a palette
+  flag: `sharp().metadata()` exposes `isPalette` cheaply, but `palette: true`
+  routes through imagequant regardless of the input and is lossless only while
+  the colour count is unchanged, which nothing in the metadata guarantees.
+  Revisit as its own phase, with a raw-pixel equality check as the correctness
+  argument and a genuinely indexed fixture, which the corpus does not have.
+  See `04` 17.18 and 19.9.
 - Renaming onto an existing path is refused immediately before the rename, but
   a microsecond TOCTOU window remains between the check and the rename.
   `rename(2)` has no portable fail-if-exists mode. See `04` 17.14.
@@ -141,9 +185,9 @@ not started.
 1. Batch preflight (done)
 2. Safe execution (done: 2a foundation, 2b wiring)
 3. (folded into 2a) Deterministic operations through one Sharp pipeline
-4. Byte-budget execution (current): quality search JPEG/WebP, lossless PNG attempt,
-   explicit failure. The next phase.
-5. Idempotence hardening tests
+4. Byte-budget execution (done): quality search JPEG/WebP, lossless PNG attempt,
+   explicit failure.
+5. Idempotence hardening tests (current)
 6. `review` (static HTML, before-copies, exceptions first)
 7. `init`
 8. Agent-facing docs (SKILL.md), packaging polish

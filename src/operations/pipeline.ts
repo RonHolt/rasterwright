@@ -5,9 +5,11 @@ import { hasMeaningfulAlpha } from '../policy/rules/types.js';
 
 import type {
   EncodeOperation,
+  EncodeOutcome,
   FilePlan,
   ImageInfo,
   PlannedOperation,
+  QualityBand,
   ResizeOperation,
 } from '../types.js';
 
@@ -54,7 +56,28 @@ import type {
  * path that calls nothing. `withMetadata()` is never used as a generic "keep":
  * it embeds a 480-byte sRGB ICC profile as a side effect, which silently
  * contradicts both the strip case and the keep-the-source-profile case.
+ *
+ * ## The byte-budget search
+ *
+ * When the plan carries a `maxBytes`, the chain above is built once and only
+ * the encoder is re-run: encode at `quality.start`, and if those bytes fit,
+ * accept them. Otherwise binary-search the integer qualities in
+ * `[floor, start - 1]`, keeping the highest one whose *measured* size fits.
+ * Never below `floor`, never upward from `start`, and never on a claim about
+ * monotonicity: only a probe actually measured under the ceiling is accepted,
+ * so a size curve with an inversion in it costs a missed optimization and can
+ * never produce a wrong write. See 04 section 19.
+ *
+ * Nothing here decides that a file is acceptable. When no quality fits, the
+ * smallest probe is returned anyway, with the quality that produced it, so the
+ * executor's verification refuses it on the evidence and the failure message
+ * can say what the best achievable size actually was.
  */
+
+/** The bytes one render produced, and what the encoder did to produce them. */
+export interface RenderedCandidate extends EncodeOutcome {
+  buffer: Buffer;
+}
 
 /**
  * Render the candidate bytes for `plan`.
@@ -62,24 +85,17 @@ import type {
  * `image` is the source's `ImageInfo`, needed for the orientation flag and for
  * the colour decision. `source` must be the bytes that produced it.
  *
- * Throws rather than guessing when asked to execute something this phase cannot
- * do. The byte-budget search does not exist yet, so a plan whose encode is
- * driven by a byte ceiling has to be reported as skipped by the executor before
- * it reaches here.
+ * Throws rather than guessing when asked to execute something it cannot do: a
+ * plan with no encode, a 16-bit source, or transparency bound for a JPEG.
  */
 export async function renderCandidate(
   source: Buffer,
   plan: FilePlan,
   image: ImageInfo,
-): Promise<Buffer> {
+): Promise<RenderedCandidate> {
   const encode = operation(plan, 'encode');
   if (encode === undefined) {
     throw new Error(`plan for ${plan.path} has no encode operation, so there is nothing to render`);
-  }
-  if (encode.budgetDriven) {
-    throw new Error(
-      `plan for ${plan.path} is driven by a byte budget, and the quality search is not implemented yet`,
-    );
   }
 
   // Defence in depth against the two ways an encode destroys something that
@@ -99,6 +115,98 @@ export async function renderCandidate(
     );
   }
 
+  // Built once. Every probe clones it, so the base chain stays immutable and no
+  // two encodes can ever share a mutable options object.
+  const chain = buildChain(source, plan, encode, image);
+
+  if (encode.format === 'png') {
+    // Lossless, maximum effort, exactly once: there is no dial to search. An
+    // over-budget result is a real failure and is reported as one, rather than
+    // reached for with palette quantization that would silently change pixels.
+    const buffer = await chain.clone().png({ compressionLevel: 9, effort: 10, palette: false }).toBuffer();
+    return { buffer, format: 'png', bytes: buffer.length };
+  }
+
+  const format = encode.format;
+  const { buffer, quality } = await searchQuality(
+    qualityBand(encode),
+    encode.maxBytes,
+    async (at) => encodeAt(chain, format, at).toBuffer(),
+  );
+  return { buffer, format, quality, bytes: buffer.length };
+}
+
+/** Attach the lossy encoder for `format` at `quality` to a clone of `chain`. */
+function encodeAt(chain: Sharp, format: 'jpeg' | 'webp', quality: number): Sharp {
+  return format === 'jpeg'
+    ? chain.clone().jpeg({ quality, mozjpeg: true, progressive: true })
+    : chain.clone().webp({ quality, effort: 4 });
+}
+
+/**
+ * The highest quality in `[floor, start]` whose output fits `maxBytes`.
+ *
+ * Separated from the Sharp chain so the algorithm can be tested against a
+ * synthetic size function, including the non-monotone one no real encoder is
+ * guaranteed not to be.
+ *
+ * `maxBytes` undefined means there is no ceiling to search against, so exactly
+ * one encode happens, at `start`. That is the path every plan took before this
+ * phase existed and it must stay byte-identical.
+ *
+ * When nothing fits, the smallest measured probe is returned rather than
+ * thrown away: it is the evidence the failure message reports, and handing it
+ * back keeps the decision to refuse in the executor's verification step where
+ * every other refusal lives.
+ */
+export async function searchQuality(
+  band: QualityBand,
+  maxBytes: number | undefined,
+  encode: (quality: number) => Promise<Buffer>,
+): Promise<{ buffer: Buffer; quality: NonNullable<EncodeOutcome['quality']> }> {
+  const { start, floor } = band;
+  const first = await encode(start);
+  let attempts = 1;
+
+  if (maxBytes === undefined || first.length <= maxBytes) {
+    return { buffer: first, quality: { start, chosen: start, floor, searched: false, attempts } };
+  }
+
+  // Tracked independently of the loop's own bounds. The search happens to probe
+  // `floor` last whenever nothing fits, but relying on that would make the
+  // failure message a property of the loop shape rather than of what was
+  // measured, and a later refactor would quietly break it.
+  let smallest = { quality: start, buffer: first };
+  let best: { quality: number; buffer: Buffer } | undefined;
+
+  let low = floor;
+  let high = start - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const probe = await encode(mid);
+    attempts += 1;
+
+    if (probe.length < smallest.buffer.length) smallest = { quality: mid, buffer: probe };
+
+    // Measured, never inferred. A probe is accepted only because its own bytes
+    // fit, so the write is correct even where the size curve is not monotone.
+    if (probe.length <= maxBytes) {
+      if (best === undefined || mid > best.quality) best = { quality: mid, buffer: probe };
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  const accepted = best ?? smallest;
+  return {
+    buffer: accepted.buffer,
+    quality: { start, chosen: accepted.quality, floor, searched: attempts > 1, attempts },
+  };
+}
+
+/** The plan's pixel operations as a configured Sharp chain, with no encoder attached. */
+function buildChain(source: Buffer, plan: FilePlan, encode: EncodeOperation, image: ImageInfo): Sharp {
   const autoOrient = operation(plan, 'autoOrient');
   const resize = operation(plan, 'resize');
   const toColorSpace = operation(plan, 'toColorSpace');
@@ -131,19 +239,7 @@ export async function renderCandidate(
     pipe = pipe.withExif({ IFD0: { Orientation: String(image.orientation) } });
   }
 
-  switch (encode.format) {
-    case 'jpeg':
-      pipe = pipe.jpeg({ quality: quality(encode), mozjpeg: true, progressive: true });
-      break;
-    case 'webp':
-      pipe = pipe.webp({ quality: quality(encode), effort: 4 });
-      break;
-    case 'png':
-      pipe = pipe.png({ compressionLevel: 9, effort: 10, palette: false });
-      break;
-  }
-
-  return pipe.toBuffer();
+  return pipe;
 }
 
 /**
@@ -172,18 +268,18 @@ function resizeTarget(
 const QUARTER_TURN: ReadonlySet<number> = new Set([5, 6, 7, 8]);
 
 /**
- * The quality to encode at.
+ * The band the search runs over.
  *
- * Always `quality.start`, never a value inferred from the source. Rasterwright
+ * `start` is the maximum, never a value inferred from the source. Rasterwright
  * does not try to detect what quality a JPEG was originally encoded at: the
  * signals are indirect, per-encoder, and wrong often enough that acting on them
  * would put a heuristic underneath every output byte (04 section 15.11).
  */
-function quality(encode: EncodeOperation): number {
+function qualityBand(encode: EncodeOperation): QualityBand {
   if (encode.quality === undefined) {
     throw new Error(`no quality band for a ${encode.format} encode, which needs one`);
   }
-  return encode.quality.start;
+  return encode.quality;
 }
 
 /** The plan's operation of a given kind, or undefined. There is at most one of each. */

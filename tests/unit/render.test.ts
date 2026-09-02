@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { renderHuman } from '../../src/cli/render/human.js';
-import type { CheckReport, FileResult, Finding } from '../../src/types.js';
+import { renderOperation } from '../../src/cli/render/plan.js';
+import type {
+  CheckReport,
+  EncodeOperation,
+  EncodeOutcome,
+  FileResult,
+  Finding,
+  QualityBand,
+} from '../../src/types.js';
 
 function finding(overrides: Partial<Finding> = {}): Finding {
   return {
@@ -191,5 +199,70 @@ describe('sections', () => {
     const output = renderHuman(report([file({ path: 'assets/ok.png', status: 'clean', findings: [] })]));
     expect(output).toMatch(/No errors or warnings\./);
     expect(output).not.toMatch(/ERRORS|WARNINGS/);
+  });
+});
+
+/**
+ * The `quality` row is the one line the plan report and the fix report cannot
+ * say the same way, so it gets its own tests rather than being inferred from a
+ * whole-report snapshot.
+ */
+describe('the quality row', () => {
+  const band: QualityBand = { start: 82, floor: 40 };
+
+  function encodeOperation(maxBytes?: number): EncodeOperation {
+    const operation: EncodeOperation = {
+      op: 'encode',
+      format: 'jpeg',
+      budgetDriven: maxBytes !== undefined,
+      quality: band,
+      stripMetadata: true,
+      preserveAlpha: false,
+      lossyReencode: true,
+      outcomeRequiresVerification: maxBytes !== undefined,
+      preservesOrientation: false,
+    };
+    if (maxBytes !== undefined) operation.maxBytes = maxBytes;
+    return operation;
+  }
+
+  function qualityRow(operation: EncodeOperation, executed?: { encoded?: EncodeOutcome }): string {
+    const row = renderOperation(operation, executed).find((line) => line.startsWith('quality'));
+    if (row === undefined) throw new Error('no quality row was rendered');
+    return row.replace(/^quality\s+/, '');
+  }
+
+  it('describes the band a plan would search', () => {
+    expect(qualityRow(encodeOperation(204_800))).toBe('82, searched down to 40 if needed');
+  });
+
+  it('names one number when a plan has no ceiling to search against', () => {
+    expect(qualityRow(encodeOperation())).toBe('82');
+  });
+
+  it('names where a finished search landed, and the range it covered', () => {
+    const encoded: EncodeOutcome = {
+      format: 'jpeg',
+      bytes: 197_353,
+      quality: { start: 82, chosen: 72, floor: 40, searched: true, attempts: 6 },
+    };
+    expect(qualityRow(encodeOperation(204_800), { encoded })).toBe('82 -> 72 (searched 40-81)');
+  });
+
+  it('names one number for a finished encode that searched nothing', () => {
+    // The discipline the `searched` flag exists for: printing a range over a
+    // single encode would describe work that did not happen.
+    const encoded: EncodeOutcome = {
+      format: 'jpeg',
+      bytes: 30_455,
+      quality: { start: 82, chosen: 82, floor: 40, searched: false, attempts: 1 },
+    };
+    expect(qualityRow(encodeOperation(204_800), { encoded })).toBe('82');
+  });
+
+  it('falls back to the start quality for a file nothing encoded', () => {
+    // A skipped or blocked file still shows its plan, and that plan must not
+    // claim a search on the strength of having a ceiling.
+    expect(qualityRow(encodeOperation(204_800), {})).toBe('82');
   });
 });

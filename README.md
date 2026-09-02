@@ -24,7 +24,7 @@ What exists right now:
 |---|---|
 | `rasterwright check` | Implemented, read-only |
 | `rasterwright fix --dry-run` | Implemented, read-only. Reports the plan it would execute. |
-| `rasterwright fix` | Implemented, **except byte budgets**. A plan whose encode exists to meet `maxBytes` is reported and skipped. |
+| `rasterwright fix` | Implemented, byte budgets included. |
 | `rasterwright review` | Not implemented |
 | `rasterwright init` | Not implemented |
 
@@ -36,10 +36,10 @@ and after a run, and assert they are identical.
 Plain `fix` writes, and only after its preconditions have passed. Every write
 is a verified buffer, a temp file in the same directory, an fsync and an atomic
 rename; the original is byte-for-byte untouched until a candidate has been
-generated in memory and evaluated against policy. **The one thing it does not
-do yet is meet a byte budget**, because the downward quality search does not
-exist; those files are skipped with a plain reason rather than encoded once and
-hoped for.
+generated in memory and evaluated against policy. A file over its `maxBytes` is
+brought under it by searching quality downward, and a ceiling the policy's own
+quality floor cannot reach is an explicit failure that names the best size
+achieved and what to do about it - never a quietly degraded file.
 
 ## Install (development)
 
@@ -614,6 +614,99 @@ re-encode worth a few percent; palette quantization is deliberately not in v0
 because it wrecks photographs. An arbitrary PNG byte budget may simply be
 unreachable, and the plan says so rather than implying success.
 
+### How a byte budget is actually met
+
+`fix` enforces `maxBytes` during execution, in memory, before anything is
+written:
+
+1. Encode at `quality.start`. If the result fits, that is the answer, and
+   exactly one encode happened.
+2. Otherwise binary-search the whole integer quality range from `floor` to
+   `start - 1`, keeping the **highest** quality whose measured output fits.
+3. Never below `floor`, never above `start`, and never a second lever: the
+   dimensions and the output format are the plan's, and the plan is fixed
+   before any encoding begins.
+
+Only a probe whose own bytes were measured under the ceiling is ever accepted,
+so the search does not depend on smaller quality always meaning smaller output.
+The widest band the config allows needs at most eight encodes.
+
+PNG has no quality dial, so there is nothing to search. It gets one
+maximum-effort lossless re-encode and either fits or does not.
+
+A ceiling the search cannot reach is a failure, and the original is left exactly
+as it was:
+
+```
+✗ assets/impossible/tiny.jpg
+
+    encode        JPEG
+    target        <= 20 KB
+    quality       82 -> 40 (searched 40-81)
+    failed        cannot reach 20 KB at 700x700 without dropping below quality 40
+                  (best: 101 KB at quality 40). Raise maxBytes, lower maxWidth or
+                  maxHeight, or allow webp for this glob.
+```
+
+The three remedies are manual on purpose. Dropping further would mean encoding
+below a floor the policy set; changing the dimensions or the format on its own
+would make the output depend on encoder results, which is exactly what
+`fix --dry-run` promises never to happen. See `04-v0-technical-plan.md` section
+19.
+
+Under `--json`, each result carries what the encoder did:
+
+```json
+"encode": {
+  "format": "jpeg",
+  "bytes": 201971,
+  "quality": { "start": 82, "chosen": 72, "floor": 40, "searched": true, "attempts": 6 }
+}
+```
+
+It is present on failures too, because the quality the search reached and the
+smallest output it produced are the actionable half of the report. The shape is
+not a stable API yet.
+
+One consequence worth knowing: a rule that sets `maxBytes` applies that ceiling
+to **every** encode it governs, not only the ones the budget caused. A file
+being rewritten for some other reason under such a rule is also searched if the
+start quality overshoots, so it can land smaller than it would have.
+
+### A conversion is judged where it lands
+
+A format conversion renames the file, and the new path can match a different
+rule. The ceiling the encode has to meet, and the quality band it searches, come
+from **the rule governing the output path** - not from the rule that matched the
+file you started with. That is the rule the result is verified against, so
+optimizing for anything else would either report a reachable ceiling as
+unfixable or chase a budget nothing checks.
+
+```yaml
+rules:
+  "assets/*.png":
+    format: webp        # says what the file must become
+  "assets/*.webp":
+    maxBytes: 100kb     # says what the output must satisfy
+```
+
+`assets/logo.png` is encoded as WebP and searched down until it fits 100 KB. The
+plan says where the number came from:
+
+```
+    note          the 100 KB ceiling comes from assets/*.webp, which governs
+                  the file after the rename, not from the rule matching it now
+```
+
+The source rule still decides `format`, `colorSpace`, `stripMetadata` and
+`autoOrient` - what the file must *become*. Size limits take the tighter of the
+two rules, so the output is compliant at both ends of the move. A target path
+matching no rule has no ceiling at all, and the plan says that too.
+
+One thing a destination rule can never do is turn a rename into a re-encode. A
+limit only the destination imposes rides along with a rewrite that is already
+happening; correcting a filename never spends generation loss on the pixels.
+
 ### The whole batch is checked, not just each file
 
 Planning is per file and reads nothing beyond that file's own inspection
@@ -793,14 +886,29 @@ Rasterwright Fix
 
 SKIPPED
 
-⊘ assets/heavy.jpg
+⊘ assets/icons/logo.png
+
+    skipped       transparency present, and JPEG cannot represent it
+
+FIXED
+
+✓ assets/heavy.jpg
 
     encode        JPEG
     target        <= 200 KB
-    quality       82
-    skipped       the byte-budget search is not implemented yet, so this file is left as it is
+    quality       82 -> 72 (searched 40-81)
+    re-encode     lossy source re-encoded; some generation loss
+    size          457 KB -> 197 KB  (57% smaller)
 
-FIXED
+✓ assets/heroes/hero.jpg
+
+    encode        WebP
+    ceiling       <= 100 KB
+    quality       82
+    re-encode     lossy source re-encoded; some generation loss
+    rename        .jpg -> .webp
+    path          assets/heroes/hero.webp
+    size          1.0 KB -> 512 B  (51% smaller)
 
 ✓ assets/oversized.jpg
 
@@ -808,23 +916,16 @@ FIXED
     encode        JPEG
     ceiling       <= 200 KB
     quality       82
-    size          412.3 KB -> 88.1 KB  (79% smaller)
-
-✓ assets/heroes/hero.jpg
-
-    encode        WebP
-    rename        .jpg -> .webp
-    path          assets/heroes/hero.webp
-    size          140.2 KB -> 41.0 KB  (71% smaller)
+    re-encode     lossy source re-encoded; some generation loss
+    size          7.2 KB -> 2.8 KB  (61% smaller)
 
 15 images inspected
-2 files fixed
+6 files fixed
 1 file skipped
-12 already compliant
-552 KB -> 129 KB across the files that changed (423 KB saved)
-
-Byte budgets are not enforced yet. A plan whose encode exists to meet maxBytes is
-reported and skipped until the byte-budget phase lands.
+2 warning-only files left unchanged
+6 already compliant
+469 KB -> 203 KB across the files that changed (266 KB saved)
+1 image matched no rule and was skipped
 ```
 
 Exceptions come first - failed, then skipped, then blocked - because those are
@@ -838,19 +939,17 @@ correct.
 | `autoOrient` | Yes. Pixels rotated, flag cleared. |
 | `resize` | Yes. Down only, `fit: inside`. |
 | `toColorSpace` | Yes, via an ICC transform to sRGB. |
-| `encode` | Yes, at `quality.start`, **once**. |
+| `encode` | Yes. Once when the output fits at `quality.start`, otherwise a downward search. |
 | `rename` | Yes, with `--allow-renames`. |
 
-**Byte budgets are not enforced.** An encode that exists *because* a file is
-over `maxBytes` needs a downward quality search, and that does not exist yet, so
-those files are `skipped` before anything is encoded rather than encoded once
-and hoped for. A ceiling that merely also applies to a rewrite something else
-required *is* enforced: if the result comes out over the ceiling, the file is
-`failed` and the original is left exactly as it was.
+Every one of them is enforced, byte budgets included. A candidate that comes out
+over its ceiling after the search has run is `failed`, and the original is left
+exactly as it was.
 
 This is why the `quality` row reads differently in the two reports. The plan
-says `82, searched down to 40 if needed`, describing a band it would search; the
-run says `82`, because that is the one quality it encoded at.
+says `82, searched down to 40 if needed`, describing a band it *would* search.
+The run says `82 -> 72 (searched 40-81)` when it searched, and a bare `82` when
+the start quality fit and no search happened.
 
 ### A file that changes mid-run is refused
 
@@ -978,7 +1077,7 @@ interim name that this run could not put back, and it is never deleted.
 |---|---|
 | `fixed` | A verified candidate replaced the original. |
 | `unchanged` | Nothing to do. Counted in the summary, omitted from `results`. |
-| `skipped` | A plan exists and this run will not execute it: it needs a permission, is unsupported, is unfixable, or depends on the byte-budget search. |
+| `skipped` | A plan exists and this run will not execute it: it needs a permission, is unsupported, or is unfixable. |
 | `blocked` | Batch preflight refused the plan's output path. |
 | `failed` | Execution or verification failed, or the image could not be decoded. **The original is untouched.** |
 
@@ -1051,13 +1150,18 @@ performed.
 
 Clearly labelled as **not built**:
 
-- **Byte budgets.** A downward quality search for JPEG and WebP, a
-  maximum-effort lossless attempt for PNG, and an explicit failure where the
-  ceiling cannot be met. Until it lands, a plan whose encode exists to satisfy
-  `maxBytes` is reported and skipped, and an indexed PNG that grows on rewrite
-  has no answer either. Everything else `fix --dry-run` describes - auto-orient,
-  downscale, colour conversion, one verified encode, atomic writes, per-file
-  failure isolation - executes today.
+- **PNG palette support.** An indexed PNG is re-encoded truecolour today and can
+  come out several times its original size, and a byte budget on one has no
+  answer beyond the explicit failure. `palette: true` is lossless only while the
+  colour count is unchanged, which nothing in the metadata guarantees, so it
+  needs a raw-pixel equality check and a phase of its own. See
+  `04-v0-technical-plan.md` section 19.
+- **Extra downscale and format fallback under a byte budget.** Stepping the
+  dimensions down, or converting to another format, when the quality floor is
+  not enough. Both are new policy surface rather than new execution behaviour,
+  and both would make the output dimensions or the output path depend on
+  encoding results, which `fix --dry-run` promises they never do. The failure
+  message names them as manual remedies instead.
 - `rasterwright review` - a local static HTML before/after page. It is also
   where before-copies land; `fix` marks the call site and keeps none today.
 - `rasterwright init` - a starter config generated from what a repo already

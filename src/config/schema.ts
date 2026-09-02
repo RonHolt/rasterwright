@@ -36,7 +36,7 @@ export const BUILT_IN_DEFAULTS: RuleBody = {
   colorSpace: 'srgb',
 };
 
-/** Default quality band for the future encoder. `start` is a ceiling, not a target. */
+/** Default quality band. `start` is the maximum the encoder uses, not a target. */
 export const DEFAULT_QUALITY = { start: 82, floor: 40 } as const;
 
 const RULE_BODY_KEYS = new Set([

@@ -5,8 +5,8 @@
  *
  *   policy -> analysis -> operation plan -> execution -> verification
  *
- * This session implements up to and including analysis/policy evaluation.
- * `operations/` (plan + execution + verification) does not exist yet, on purpose.
+ * Every stage of that exists: `policy/` evaluates, `operations/plan.ts` plans,
+ * and `operations/` executes and verifies. Only `review` and `init` are unbuilt.
  *
  * Everything here is plain data. `policy/` is pure functions over it, which is
  * what makes `check` provably read-only.
@@ -75,7 +75,7 @@ export interface ImageInfo {
   contentHash: string;
 }
 
-/** Quality band for the future encoder. See `RuleBody.quality`. */
+/** Quality band the byte-budget search runs over. See `RuleBody.quality`. */
 export interface QualityBand {
   /**
    * The MAXIMUM quality Rasterwright will initially encode at, not a target.
@@ -276,8 +276,8 @@ export interface CheckReport {
  * Rasterwright do about it", and nothing more: producing a plan writes nothing,
  * encodes nothing, and reads nothing beyond the `FileResult` it is handed.
  *
- * Execution (`operations/execute.ts`) does not exist yet. Until it does, a plan
- * is the whole product of `rasterwright fix --dry-run`.
+ * A plan is the whole product of `rasterwright fix --dry-run`, and the input
+ * `operations/execute.ts` runs against for a plain `fix`.
  * ---------------------------------------------------------------------------
  */
 
@@ -573,11 +573,9 @@ export interface FixPlanReport {
  * ---------------------------------------------------------------------------
  * Fix execution
  *
- * Nothing in this build produces these yet: plain `rasterwright fix` still
- * exits 2. They are here so the execution layer and the report shape are agreed
- * before anything is wired, and so the pieces landing underneath it - the
- * pipeline, the atomic writer, the git survey - can be written against the
- * result they will eventually fill in.
+ * What a plain `rasterwright fix` produces. The report shape is shared by the
+ * human renderer and `--json`, and the pieces underneath it - the pipeline, the
+ * atomic writer, the git survey - all report into it.
  * ---------------------------------------------------------------------------
  */
 
@@ -587,8 +585,7 @@ export interface FixPlanReport {
  * - `fixed`     - a verified candidate replaced the original.
  * - `unchanged` - the plan was empty. Nothing was opened for writing.
  * - `skipped`   - a plan exists but this run will not execute it, because it
- *                 needs a permission, is unsupported, is unfixable, or depends
- *                 on a byte-budget search that does not exist yet.
+ *                 needs a permission, is unsupported, or is unfixable.
  * - `blocked`   - batch preflight refused the plan's output path.
  * - `failed`    - execution or verification failed. The original is untouched.
  */
@@ -596,6 +593,38 @@ export type FixStatus = 'fixed' | 'unchanged' | 'skipped' | 'blocked' | 'failed'
 
 /** What a file looked like, in the terms a report needs to compare before and after. */
 export type FixMeasurement = Pick<ImageInfo, 'bytes' | 'width' | 'height' | 'format'>;
+
+/**
+ * What the encoder actually did on one file.
+ *
+ * Deliberately on the *result* and never on `FilePlan.operations`. A plan is
+ * the pure planner's output and `fix --dry-run` publishes exactly that shape;
+ * writing an execution result back into it would make the plan disagree with
+ * what `planFile()` produced and break the guarantee that planning predicts
+ * nothing about encoding.
+ *
+ * Not a stable API surface yet. It exists so a report can say which quality was
+ * chosen and how it was reached, rather than restating the band the plan asked
+ * for as though it were the answer.
+ */
+export interface EncodeOutcome {
+  format: ImageFormat;
+  /** Absent for PNG, which is lossless and has no quality dial. */
+  quality?: {
+    /** The maximum the band allowed, and the quality the first encode used. */
+    start: number;
+    /** The quality whose bytes were kept. Equal to `start` when nothing was searched. */
+    chosen: number;
+    /** The lowest quality the search was allowed to reach. */
+    floor: number;
+    /** True when more than one quality was encoded. */
+    searched: boolean;
+    /** Encodes performed. 1 when the start quality was accepted outright. */
+    attempts: number;
+  };
+  /** Size of the bytes that were kept. */
+  bytes: number;
+}
 
 export interface FixResult {
   path: string;
@@ -613,6 +642,12 @@ export interface FixResult {
   before: FixMeasurement;
   /** Present only when a new file was written. */
   after?: FixMeasurement;
+  /**
+   * What the encoder did, when this run encoded anything. Present on a failed
+   * result too: what the search reached before giving up is the whole reason
+   * the failure is actionable.
+   */
+  encode?: EncodeOutcome;
   /** Bytes saved as a percentage of `before.bytes`. Negative when the file grew. */
   savingsPct?: number;
   /** Why the file failed, was skipped or was blocked. Plain language. */
@@ -627,6 +662,12 @@ export interface FixSummary {
   checked: number;
   fixed: number;
   unchanged: number;
+  /**
+   * Unchanged files carrying warnings, which a fix deliberately leaves alone.
+   * Counted apart from the rest of `unchanged` so the report can say "left
+   * unchanged" rather than "already compliant" about a file that is neither.
+   */
+  unchangedWithWarnings: number;
   skipped: number;
   blocked: number;
   failed: number;

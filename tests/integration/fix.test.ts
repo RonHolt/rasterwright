@@ -63,15 +63,20 @@ describe('fix on a mixed project', () => {
 
     const result = await runCli(['fix', '--allow-renames'], root);
 
-    // heavy.jpg is skipped for its byte budget and icons/logo.png is unfixable,
-    // so the run legitimately exits 1 with work still outstanding.
+    // icons/logo.png wants a JPEG it cannot become, so the run legitimately
+    // exits 1 with work still outstanding.
     expect(result.code).toBe(1);
     expect(result.stdout).toMatch(/^Rasterwright Fix$/m);
+    // Warning-only files are counted apart from the genuinely compliant ones,
+    // as the plan report counts them, so neither number over-claims.
+    expect(result.stdout).toMatch(/2 warning-only files left unchanged/);
+    expect(result.stdout).toMatch(/6 already compliant/);
 
     const after = hashTree(root);
     const changed = [...after].filter(([file, hash]) => before.get(file) !== hash).map(([file]) => file);
     expect(changed.sort()).toEqual([
       'assets/cmyk.jpg',
+      'assets/heavy.jpg',
       'assets/heroes/hero.webp',
       'assets/logo-webp.webp',
       'assets/oversized.jpg',
@@ -129,14 +134,20 @@ describe('fix on a mixed project', () => {
     expect(exists(root, 'assets', 'heroes', 'hero.webp')).toBe(false);
   });
 
-  it('refuses a budget-driven plan before encoding anything', async () => {
+  it('brings a budget-driven file under its ceiling by searching quality down', async () => {
     const root = copyGitProject('mixed');
     const report = await jsonReport(root, ['--allow-renames']);
 
     const heavy = report.results.find((entry) => entry.path === 'assets/heavy.jpg');
-    expect(heavy?.status).toBe('skipped');
-    expect(heavy?.reason).toMatch(/byte-budget search is not implemented yet/);
-    expect(heavy?.after).toBeUndefined();
+    expect(heavy?.status).toBe('fixed');
+    expect(heavy?.after?.bytes).toBeLessThanOrEqual(200 * 1024);
+    expect(heavy?.before.bytes).toBeGreaterThan(200 * 1024);
+    expect(heavy?.encode?.quality?.searched).toBe(true);
+    expect(heavy?.encode?.quality?.chosen).toBeLessThan(heavy?.encode?.quality?.start ?? 0);
+
+    // The dimensions are untouched: the search only ever turns the quality dial.
+    expect(heavy?.after?.width).toBe(heavy?.before.width);
+    expect(heavy?.after?.height).toBe(heavy?.before.height);
   });
 
   it('reports an unfixable transparency conflict as skipped, not attempted', async () => {
@@ -148,6 +159,211 @@ describe('fix on a mixed project', () => {
     expect(logo?.status).toBe('skipped');
     expect(logo?.reason).toMatch(/transparency/);
     expect(hashTree(root).get('assets/icons/logo.png')).toBe(before.get('assets/icons/logo.png'));
+  });
+});
+
+describe('fix enforcing a byte budget', () => {
+  /** The `budget` project, fixed once, with its report. */
+  async function fixBudget(): Promise<{ root: string; report: FixReport }> {
+    const root = copyGitProject('budget');
+    return { root, report: await jsonReport(root, []) };
+  }
+
+  function resultFor(report: FixReport, path: string) {
+    const found = report.results.find((entry) => entry.path === path);
+    if (found === undefined) throw new Error(`no result for ${path}`);
+    return found;
+  }
+
+  it('fixes what a quality search can reach and fails the rest explicitly', async () => {
+    const { report } = await fixBudget();
+
+    expect(report.summary.fixed).toBe(3);
+    expect(report.summary.failed).toBe(2);
+    expect(report.summary.unchanged).toBe(1);
+
+    expect(resultFor(report, 'assets/heavy.jpg').status).toBe('fixed');
+    expect(resultFor(report, 'assets/alpha.webp').status).toBe('fixed');
+    expect(resultFor(report, 'assets/resized/wide.jpg').status).toBe('fixed');
+    expect(resultFor(report, 'assets/noisy.png').status).toBe('failed');
+    expect(resultFor(report, 'assets/impossible/tiny.jpg').status).toBe('failed');
+  });
+
+  it('searches only when the start quality overshoots', async () => {
+    const { report } = await fixBudget();
+
+    const searched = resultFor(report, 'assets/heavy.jpg').encode?.quality;
+    expect(searched?.searched).toBe(true);
+    expect(searched?.attempts).toBeGreaterThan(1);
+    expect(searched?.attempts).toBeLessThanOrEqual(8);
+    expect(searched?.chosen).toBeLessThan(searched?.start ?? 0);
+
+    // The resize brings this one under the ceiling on its own, so the start
+    // quality is kept and nothing is searched.
+    const straight = resultFor(report, 'assets/resized/wide.jpg').encode?.quality;
+    expect(straight).toEqual({ start: 82, chosen: 82, floor: 40, searched: false, attempts: 1 });
+  });
+
+  it('keeps transparency through the search', async () => {
+    const { root, report } = await fixBudget();
+
+    expect(resultFor(report, 'assets/alpha.webp').encode?.quality?.searched).toBe(true);
+    const alpha = await inspect(root, 'assets/alpha.webp');
+    expect(alpha.ok).toBe(true);
+    if (!alpha.ok) return;
+    expect(alpha.info.format).toBe('webp');
+    expect(alpha.info.hasAlpha).toBe(true);
+    expect(alpha.info.isOpaque).toBe(false);
+    expect(alpha.info.bytes).toBeLessThanOrEqual(150 * 1024);
+  });
+
+  it('explains a PNG it cannot shrink, and leaves it byte-identical', async () => {
+    const root = copyGitProject('budget');
+    const before = hashTree(root);
+    const report = await jsonReport(root, []);
+
+    const png = resultFor(report, 'assets/noisy.png');
+    expect(png.reason).toMatch(/PNG is lossless/);
+    expect(png.reason).toMatch(/still over the 200 KB ceiling/);
+    expect(png.after).toBeUndefined();
+    expect(hashTree(root).get('assets/noisy.png')).toBe(before.get('assets/noisy.png'));
+  });
+
+  it('explains a ceiling the quality floor cannot reach', async () => {
+    const root = copyGitProject('budget');
+    const before = hashTree(root);
+    const report = await jsonReport(root, []);
+
+    const impossible = resultFor(report, 'assets/impossible/tiny.jpg');
+    expect(impossible.reason).toMatch(/cannot reach 20 KB at 700x700/);
+    expect(impossible.reason).toMatch(/without dropping below quality 40/);
+    expect(impossible.reason).toMatch(/Raise maxBytes/);
+    expect(impossible.encode?.quality?.chosen).toBe(40);
+    expect(hashTree(root).get('assets/impossible/tiny.jpg')).toBe(
+      before.get('assets/impossible/tiny.jpg'),
+    );
+  });
+
+  it('never opens a file that is already under its budget', async () => {
+    const root = copyGitProject('budget');
+    const before = hashTree(root);
+    const report = await jsonReport(root, []);
+
+    expect(report.results.some((entry) => entry.path === 'assets/small.webp')).toBe(false);
+    expect(hashTree(root).get('assets/small.webp')).toBe(before.get('assets/small.webp'));
+  });
+
+  it('reports the search in the human output, and only where one happened', async () => {
+    const root = copyGitProject('budget');
+    const result = await runCli(['fix'], root);
+
+    expect(result.code).toBe(1);
+    // `82 -> 72 (searched 40-81)` for the file that searched, a bare number for
+    // the one that did not.
+    expect(result.stdout).toMatch(/quality\s+82 -> \d+ \(searched 40-81\)/);
+    expect(result.stdout).toMatch(/quality\s+82$/m);
+    expect(result.stdout).toMatch(/FAILED/);
+    expect(result.stdout).toMatch(/2 files failed/);
+    expect(result.stdout).toMatch(/3 files fixed/);
+    // The retired note about budgets being unimplemented is gone for good.
+    expect(result.stdout).not.toMatch(/not enforced yet/);
+  });
+
+  it('leaves check with only the two files nothing could fix', async () => {
+    const root = copyGitProject('budget');
+    await runCli(['fix'], root);
+
+    const check = await runCli(['check', '--json'], root);
+    const report = JSON.parse(check.stdout) as { files: { path: string; status: string }[] };
+    const failing = report.files.filter((file) => file.status === 'error').map((file) => file.path);
+
+    expect(failing.sort()).toEqual(['assets/impossible/tiny.jpg', 'assets/noisy.png']);
+  });
+
+  it('writes nothing at all on a second run', async () => {
+    // The strict form of 04 section 10 applied to the budget path: a file the
+    // search brought under its ceiling is compliant, so the next run plans
+    // nothing for it and no buffer reaches the disk.
+    const root = copyGitProject('budget');
+    expect((await runCli(['fix'], root)).code).toBe(1);
+    const hashes = hashTree(root);
+
+    const trace = path.join(scratchDir('trace'), 'writes.log');
+    const second = await runCli(['fix', '--json'], root, { RASTERWRIGHT_TRACE_WRITES: trace });
+    const report = JSON.parse(second.stdout) as FixReport;
+
+    expect(fs.existsSync(trace)).toBe(false);
+    expect(hashTree(root)).toEqual(hashes);
+    expect(residue(root)).toEqual([]);
+
+    // Only the two genuinely unreachable files are still reported, and the
+    // three that were fixed are now counted as compliant.
+    expect(report.summary.fixed).toBe(0);
+    expect(report.summary.failed).toBe(2);
+    expect(report.summary.unchanged).toBe(4);
+  });
+
+  it('is deterministic: two runs from the same source pick the same bytes', async () => {
+    const first = copyGitProject('budget');
+    const second = copyGitProject('budget');
+
+    await runCli(['fix'], first);
+    await runCli(['fix'], second);
+
+    expect(hashTree(second)).toEqual(hashTree(first));
+  });
+});
+
+describe('a conversion that moves the file under another rule', () => {
+  it('meets the target rule ceiling, not the one the source matched', async () => {
+    // `tighter/*.png` sets no ceiling; `tighter/*.webp` sets 100 KB. Planning
+    // against the source rule would encode once at quality 82, come out over,
+    // and report a reachable ceiling as a failure.
+    const root = copyGitProject('crossrule');
+    const report = await jsonReport(root, ['--allow-renames']);
+
+    const tighter = report.results.find((entry) => entry.path === 'tighter/noisy.png');
+    expect(tighter?.status).toBe('fixed');
+    expect(tighter?.outputPath).toBe('tighter/noisy.webp');
+    expect(tighter?.after?.bytes).toBeLessThanOrEqual(100 * 1024);
+    expect(tighter?.encode?.quality?.searched).toBe(true);
+    expect(tighter?.encode?.quality?.chosen).toBeLessThan(82);
+
+    const check = await runCli(['check', '--json'], root);
+    const files = (JSON.parse(check.stdout) as { files: { path: string; status: string }[] }).files;
+    expect(files.find((file) => file.path === 'tighter/noisy.webp')?.status).not.toBe('error');
+  });
+
+  it('does not degrade a file to meet a ceiling the target rule relaxes', async () => {
+    // `looser/*.png` sets 50 KB and `looser/*.webp` sets 400 KB. Searching down
+    // to 50 KB would burn quality for a rule that stops applying, and would
+    // then claim success against a ceiling nothing checks.
+    const root = copyGitProject('crossrule');
+    const report = await jsonReport(root, ['--allow-renames']);
+
+    const looser = report.results.find((entry) => entry.path === 'looser/noisy.png');
+    expect(looser?.status).toBe('fixed');
+    expect(looser?.outputPath).toBe('looser/noisy.webp');
+    expect(looser?.encode?.quality).toEqual({
+      start: 82,
+      chosen: 82,
+      floor: 40,
+      searched: false,
+      attempts: 1,
+    });
+    expect(looser?.after?.bytes).toBeGreaterThan(50 * 1024);
+    expect(looser?.after?.bytes).toBeLessThanOrEqual(400 * 1024);
+  });
+
+  it('names the governing glob in the dry run, and writes nothing', async () => {
+    const root = copyGitProject('crossrule');
+    const before = hashTree(root);
+
+    const result = await runCli(['fix', '--dry-run', '--allow-renames'], root);
+
+    expect(result.stdout).toMatch(/100 KB ceiling comes from tighter\/\*\.webp/);
+    expect(result.stdout).toMatch(/400 KB ceiling comes from looser\/\*\.webp/);
+    expect(hashTree(root)).toEqual(before);
   });
 });
 
@@ -301,9 +517,10 @@ describe('fix converting a format', () => {
   });
 
   it('writes nothing on a second run over the mixed project either', async () => {
-    // The weak form, because `mixed` can never reach a clean `check` until the
-    // byte-budget phase lands: `heavy.jpg` is over its ceiling and
-    // `icons/logo.png` wants a JPEG it cannot become.
+    // The weak form, because `mixed` can never reach a clean `check`:
+    // `icons/logo.png` carries transparency under a `format: jpeg` rule and is
+    // permanently unfixable. `heavy.jpg` is no longer a reason - it is fixed on
+    // the first run and left alone on the second.
     const root = copyGitProject('mixed');
     await runCli(['fix', '--allow-renames'], root);
     const hashes = hashTree(root);
@@ -391,11 +608,16 @@ describe('--backup-dir', () => {
     expect(result.code).toBe(1);
 
     // One copy per file that was actually written, under its repo-relative path.
-    for (const file of ['assets/cmyk.jpg', 'assets/oversized.jpg', 'assets/heroes/hero.jpg']) {
+    for (const file of [
+      'assets/cmyk.jpg',
+      'assets/heavy.jpg',
+      'assets/oversized.jpg',
+      'assets/heroes/hero.jpg',
+    ]) {
       expect(fs.existsSync(path.join(backups, file))).toBe(true);
     }
     expect(fs.existsSync(path.join(backups, 'assets/compliant.jpg'))).toBe(false);
-    expect(fs.existsSync(path.join(backups, 'assets/heavy.jpg'))).toBe(false);
+    expect(fs.existsSync(path.join(backups, 'assets/icons/logo.png'))).toBe(false);
 
     // The copies are the originals, byte for byte.
     for (const [file, hash] of hashTree(backups)) {
@@ -646,8 +868,12 @@ describe('fix --json', () => {
     expect(report.unrecovered).toEqual([]);
 
     expect(report.summary.checked).toBe(15);
-    expect(report.summary.fixed).toBe(5);
-    expect(report.summary.skipped).toBe(2);
+    expect(report.summary.fixed).toBe(6);
+    expect(report.summary.skipped).toBe(1);
+    // Warning-only files are counted apart from the genuinely compliant ones,
+    // as the plan report counts them, so neither number over-claims.
+    expect(report.summary.unchangedWithWarnings).toBe(2);
+    expect(report.summary.unchanged).toBe(8);
     expect(report.summary.interrupted).toBe(false);
     expect(report.summary.completed).toBe(15);
     expect(report.summary.bytesAfter).toBeLessThan(report.summary.bytesBefore);

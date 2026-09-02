@@ -1030,14 +1030,13 @@ libvips' interpretation of the numbers rather than performing the ICC transform,
 and it is not needed anyway, because a plain encode of a CMYK JPEG already
 emerges as sRGB.
 
-**5. Budget-driven plans are skipped, not attempted.** `EncodeOperation.
-budgetDriven` marks the plans where a byte ceiling is the *reason* for the
-encode, and the quality search does not exist until the byte-budget phase.
-`renderCandidate()` throws on one rather than encoding something it cannot
-verify, and the executor must report those files as `skipped` with a plain
-reason *before* any encoding happens. Failing after a wasted encode would read
-as a bug rather than as a stated limitation, and `maxBytes` is common enough in
-real configs that the phase would look broken.
+**5. Budget-driven plans are skipped, not attempted.** *Superseded by section
+19.* This held only while the quality search did not exist. `budgetDriven` still
+marks the plans where a byte ceiling is the *reason* for the encode, and it
+still decides whether the report says "target" or "ceiling", but it no longer
+decides anything about execution: `renderCandidate()` searches, and
+`verifyCandidate` decides whether the result may be written. `skipReasonFor`'s
+budget branch and the pipeline's `budgetDriven` throw are both gone.
 
 **6. A case-only self-rename is performed in two steps, and only where it is
 needed.** `a.JPG` to `a.jpg` is one file on macOS and Windows, so a direct
@@ -1266,9 +1265,11 @@ can still come out over `maxBytes` - `mixed` puts `maxBytes: 200kb` on its broad
 rule, so every encode there carries `outcomeRequiresVerification`. The raw
 `maxBytes` finding says the file is too big, which reads as a bug when the user
 just asked Rasterwright to make it smaller. The failure says what actually
-happened instead: the single encode at `quality.start` produced N, the ceiling
-is M, and the search that would go lower does not exist yet. Correct behaviour,
-stated as a limitation rather than looking like one.
+happened instead. *The last clause is superseded by section 19*: the message no
+longer says the search does not exist. It names where the search stopped, the
+smallest output it reached, and the manual remedies - or, when the policy's
+floor equals its start, the single quality that was tried and why there was no
+band to search.
 
 **6. Exit codes.** 0 when nothing needs attention and the run was not
 interrupted; 1 when any result needs attention, an image is stranded, or the run
@@ -1366,3 +1367,183 @@ ignored, `--concurrency` is matched as a whole integer rather than handed to
 usage errors to exit 2 instead of its default 1. A script gating on the exit code
 could otherwise not tell a typo in the command line from a repository full of
 oversized images.
+
+## 19. Decisions from implementing byte-budget execution
+
+**1. The search lives in `pipeline.ts`, not in a new `encode.ts`.** Section 2
+sketches `encode.ts` as the home for "per-format encoding, incl. byte-budget
+quality search", and that sketch predates the pipeline. Everything the search
+needs is already inside `renderCandidate`: the built Sharp chain, the 16-bit
+refusal, the alpha/JPEG refusal, the three-way colour decision, and
+`resizeTarget`'s stored-versus-displayed dimension swap. Splitting the encoder
+out would mean either passing a half-built `Sharp` across a module boundary or
+duplicating the chain construction. The chain is built once by `buildChain()`
+and only the encoder is re-run.
+
+**2. The algorithm.** Encode at `quality.start`. If those bytes fit, accept them
+and stop: one encode, `searched: false`. Otherwise binary-search the integer
+qualities in `[floor, start - 1]`, keeping the highest whose *measured* size
+fits. Never below the floor, never upward from `start`, never a second lever.
+When nothing fits, the smallest probe measured is returned with the quality that
+produced it. A PNG has no dial, so it is re-encoded losslessly at maximum effort
+exactly once and either fits or does not.
+
+**3. Monotonicity is not assumed, and the cost of that is named.** Only a probe
+whose own bytes were measured under the ceiling is ever accepted, and the
+highest such probe is kept rather than the one the binary-search invariant would
+imply. **The search can never write bytes over the ceiling.** What it *can* do
+on a non-monotone curve is miss a fitting quality, and in the worst case that
+means reporting a failure where a fitting quality existed - if quality 70 is the
+only one that fits, the search probes 60, finds it over, and abandons the half
+that contains 70. Both shapes are pinned by tests.
+
+Measured over 20,000 synthetic curves built from a decreasing trend plus noise
+(19,948 of them non-monotone): 314 missed a higher fitting quality, none
+produced a false failure, and none produced an over-ceiling result. The false
+failure needs an isolated fitting island rather than trending noise, which is
+why it needs a constructed test rather than a fuzz to demonstrate. Empirically
+the real risk is lower still: all 43 qualities from 82 down to 40 on
+`fixtures/images/overbudget.jpg`, the hardest case in the corpus, contain zero
+inversions.
+
+The alternative is a linear scan of the whole band on every over-budget file,
+which is 43 decodes instead of 6 to remove a failure mode nobody has hit. The
+binary search stays, and the honesty about what it costs stays with it.
+
+**4. `attempts <= 8` is an invariant, not a cap.** The widest band the schema
+allows is 1 to 100, which is 99 values, needing seven probes plus the initial
+one. A cap that stopped the search early would make the chosen quality depend on
+the width of the band, which would break the determinism claim outright. It is
+asserted in tests instead.
+
+**5. The pipeline decides nothing.** `verifyCandidate` remains the sole
+authority on whether bytes may be written: a search that could not reach the
+ceiling hands its best attempt back anyway, verification produces the `maxBytes`
+error-level finding, and the write is refused there like every other refusal.
+The search outcome only feeds the failure message. This is why the phase needed
+no new refusal logic.
+
+**6. A single Sharp instance is safe to reuse sequentially, and is cloned
+anyway.** Mutating `.jpeg({quality})` on one instance and calling `.toBuffer()`
+repeatedly produces byte-identical output to cloning before each encoder call,
+verified against this repo's sharp: q82, q40 and q82 again all reproduce
+exactly. Never share an instance across *concurrent* `toBuffer()` calls, because
+the options object is mutated in place. `.clone()` costs nothing measurable and
+keeps the base chain obviously immutable, so the loop clones.
+
+**7. Probe cost, measured.** libvips re-decodes the source buffer on every
+`toBuffer()`, which is the real cost of the search and is accepted for v0. On
+`overbudget.jpg` (700x700 incompressible noise) a six-probe search takes about
+1.1 seconds, roughly 185 ms per probe. Typical photographic content is faster,
+and a file already under its ceiling costs one encode as before.
+
+There is a memory cost too, and it is not free: sharp's `clone()` runs
+`structuredClone` over its options, which for buffer input **copies the whole
+source buffer**. Measured against `overbudget.jpg`, twenty live clones add 9,141
+KB of `arrayBuffers`, exactly 457 KB each. The search holds one clone at a time,
+so peak memory is bounded, but every probe allocates and discards a full copy of
+the source and the churn scales as probes x source size x concurrency. Mutating
+a single instance instead would avoid it and produces byte-identical output
+(item 6), so this is a deliberate trade of allocation for a chain that cannot be
+accidentally shared. Revisit it if a large-image run shows GC pressure. Do *not*
+optimize by decoding once to raw pixels and encoding from that: it would change
+the ICC handling path, which operates on the decoded chain, and risks different
+output bytes. That trades the determinism guarantee for a speedup nobody asked
+for.
+
+**8. `allowExtraDownscale` and format fallback are deferred.** Section 6 sketches
+a fallback ladder whose later rungs step the dimensions down and then try another
+format. Neither key exists in the schema, and neither is built here.
+
+- They are new *policy* surface wearing an execution phase's clothes. Each needs
+  a schema key, validation, a place in the glob-merge precedence rules, an
+  `EffectiveRule.sources` attribution so a violation can name the rule that set
+  it, documentation, and config tests.
+- Format fallback is a rename, so it collides with `--allow-renames`, with batch
+  preflight, with the `ruleGlobExcludesTargetFormat` check and with the
+  one-encode-per-file invariant. Worse, it would make the output format depend on
+  an encoding result, so `fix --dry-run` could no longer state the target path.
+  That contradicts the planner's purity, which the whole dry run rests on.
+- Extra downscale changes what `maxWidth` means. Today it is a limit and the
+  resize target is derived from it deterministically; stepping to 90 or 80
+  percent makes the output dimensions a function of encoder results, and two
+  runs could disagree about whether a file is compliant.
+
+Instead, the failure messages name both as the *manual* remedies the user can
+apply right now: raise `maxBytes`, lower `maxWidth` or `maxHeight`, or allow
+WebP for that glob. Saying that in the failure is most of the value at none of
+the cost, and it keeps the promise that an explicit failure explains what to do
+next. The suggestion is per format, because offering WebP to a WebP file is
+noise.
+
+**9. No palette quantization, and no palette flag yet.** Section 17.18 asked
+this phase to decide whether an indexed PNG needs a flag on `ImageInfo`. The flag
+itself is trivial - `sharp().metadata()` exposes `isPalette` - but the *condition*
+is not. libvips routes `palette: true` through imagequant whatever the input, and
+quantization is lossless only while the target colour count is at least the
+source's actual colour count, which nothing in the metadata reports. Verifying
+pixel identity at runtime is possible and not expensive, but it turns a
+"lossless" claim into something that depends on getting an equality check right,
+which is exactly the silent-damage surface section 7 exists to avoid. So: ship
+the honest PNG failure, and revisit palette support as its own phase with the
+raw-pixel equality check as its correctness argument and a genuinely indexed
+fixture, which the corpus does not have today.
+
+**10. The search outcome lives on `FixResult`, never on `FilePlan`.** `FilePlan`
+is the pure planner's output and `fix --dry-run` publishes that exact shape.
+Writing an execution result into it would make the plan disagree with what
+`planFile()` produced and would quietly break the invariant that planning
+predicts nothing. `FixResult.encode` is additive and optional, so no existing
+`--json` consumer breaks.
+
+**11. Ceiling-only encodes now search too, which is a visible change.** A rule
+setting `maxBytes` puts `outcomeRequiresVerification` on *every* encode it
+governs, not only the ones the budget caused. Those encodes previously ran once
+at `quality.start` and failed if the result came out over; now they search down
+like any other. Files nobody flagged as over budget can therefore land at a lower
+quality and a smaller size than they did before this phase. That is the intended
+behaviour - a ceiling is a ceiling - but it is a real change in output bytes and
+is recorded here rather than discovered in a diff.
+
+**12. The plan is built against the rule governing the OUTPUT path.** This is
+the one real bug the phase shipped and then fixed. `planFile()` read `maxBytes`
+and `quality` from the rule matching the file's *current* path, while
+`verifyCandidate` evaluates the candidate against the rule matching its *target*
+path. Those agree for every plan that leaves the file where it is, and disagree
+for every format conversion that moves it under a different glob. Two failure
+shapes, both reachable from an ordinary config:
+
+- A source rule with no ceiling and a target rule with one. The search never
+  ran, the single encode came out over, and a perfectly reachable ceiling was
+  reported as an unfixable file.
+- A source rule with a tight ceiling and a target rule with a loose one. The
+  search burned quality chasing a budget that stopped applying the moment the
+  file moved, then reported success against a ceiling nothing checks.
+
+The fix keeps the planner pure. `planFile(file, permissions, { ruleFor })` takes
+a resolver callback, and `planRun` passes `resolver.resolve`, which is a
+deterministic function of the loaded config: no filesystem, no Sharp, same
+inputs and the same plan. Omitted, everything behaves exactly as before, which
+is right for any plan that does not move a file.
+
+The split of responsibilities is deliberate. The **source** rule decides what
+the file must *become*: `format` (and therefore the output path), `colorSpace`,
+`stripMetadata`, `autoOrient`. The **destination** rule decides what the output
+must *satisfy*: `maxBytes`, and the `quality` band the search turns to meet it.
+Size limits take the tighter of the two, so the output is compliant at both ends
+of the move and the source's own violation is still resolved.
+
+Three consequences worth stating:
+
+- **A destination-only limit rides along with a rewrite; it never causes one.**
+  A rename that touches no pixels stays that way. Re-encoding a file to satisfy
+  a limit it is only about to inherit would spend generation loss on a filename
+  change, and on a 16-bit source it would turn the one plan that works into an
+  `unsupported` one, leaving the file permanently mis-named with no remedy - the
+  exact outcome the rename-only carve-out in section 17 exists to prevent.
+- **A target path matching no rule has no ceiling at all.** The source's number
+  stopped applying when the file moved, and carrying it forward would enforce a
+  rule that no longer governs the file, silently. A note says so.
+- **The dry run names the glob.** When the ceiling comes from somewhere other
+  than the rule the user is looking at, the plan says which glob supplied it.
+  A number with no provenance reads as a bug.

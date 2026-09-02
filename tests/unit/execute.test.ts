@@ -11,8 +11,15 @@ import { evaluate } from '../../src/policy/evaluate.js';
 import { inspectBuffer } from '../../src/scanner/inspect.js';
 import { sha256 } from '../../src/utils/hash.js';
 import { createStopFlag } from '../../src/utils/signal.js';
-import { cleanupProjects, copyProject, FIXTURE_IMAGES } from '../helpers/project.js';
-import type { FilePlan, FileResult, ImageInfo, Policy } from '../../src/types.js';
+import { cleanupProjects, copyProject, FIXTURE_IMAGES, residue } from '../helpers/project.js';
+import type {
+  EncodeOutcome,
+  FilePlan,
+  FileResult,
+  ImageFormat,
+  ImageInfo,
+  Policy,
+} from '../../src/types.js';
 
 afterEach(cleanupProjects);
 
@@ -54,6 +61,21 @@ function contextFor(root: string, policy: Policy, render?: ExecuteContext['rende
   return context;
 }
 
+/**
+ * A render stub, in the shape the real pipeline returns.
+ *
+ * The tests that use one care about what happens *around* the encode, so the
+ * quality outcome is whatever the test needs it to be - including absent, which
+ * is what a PNG render reports.
+ */
+function renders(
+  buffer: Buffer,
+  format: ImageFormat = 'png',
+  quality?: EncodeOutcome['quality'],
+): ExecuteContext['render'] {
+  return async () => ({ buffer, format, bytes: buffer.length, quality });
+}
+
 /** A project holding one fixture image under `assets/`, plus its policy. */
 function projectWith(image: string, as: string): string {
   const root = copyProject('clean');
@@ -86,7 +108,10 @@ describe('skipReasonFor', () => {
     expect(skipReasonFor({ ...base, status: 'planned' })).toBeUndefined();
   });
 
-  it('refuses a budget-driven plan before anything is encoded', () => {
+  it('executes a budget-driven plan like any other', () => {
+    // The regression test for the branch this phase removed. A plan whose
+    // encode exists to meet `maxBytes` goes down the same path as every other
+    // planned file; whether its output may be written is verification's call.
     const plan: FilePlan = {
       ...base,
       status: 'planned',
@@ -95,6 +120,8 @@ describe('skipReasonFor', () => {
           op: 'encode',
           format: 'jpeg',
           budgetDriven: true,
+          maxBytes: 1024,
+          quality: { start: 82, floor: 40 },
           stripMetadata: true,
           preserveAlpha: false,
           lossyReencode: true,
@@ -103,7 +130,7 @@ describe('skipReasonFor', () => {
         },
       ],
     };
-    expect(skipReasonFor(plan)).toMatch(/byte-budget search is not implemented yet/);
+    expect(skipReasonFor(plan)).toBeUndefined();
   });
 
   it('names the permission a plan is waiting on', () => {
@@ -133,19 +160,123 @@ describe('skipReasonFor', () => {
 });
 
 describe('executeFile', () => {
-  it('reports a budget-driven plan as skipped without calling the encoder', async () => {
+  it('executes a budget-driven plan and reports the quality the search chose', async () => {
     const root = projectWith('overbudget.jpg', 'heavy.jpg');
-    const policy = policyOf([{ glob: 'assets/**', body: { maxBytes: 1024 } }]);
+    const policy = policyOf([{ glob: 'assets/**', body: { maxBytes: 200 * 1024 } }]);
     const before = await fileResult(root, 'assets/heavy.jpg', policy);
     const plan = planFile(before, { allowRenames: true });
+
+    const result = await executeFile(contextFor(root, policy), plan, before);
+
+    expect(result.status).toBe('fixed');
+    expect(result.needsAttention).toBe(false);
+    expect(result.encode?.quality?.searched).toBe(true);
+    expect(result.encode?.quality?.chosen).toBeLessThan(82);
+    expect(result.after?.bytes).toBeLessThanOrEqual(200 * 1024);
+    expect(fs.statSync(path.join(root, 'assets', 'heavy.jpg')).size).toBe(result.after?.bytes);
+  });
+
+  it('never re-encodes a file that is already inside its budget', async () => {
+    // Structural, not a check inside the search: a compliant file gets an empty
+    // plan from `planFile` and never reaches the encoder at all.
+    const root = projectWith('sample.webp', 'small.webp');
+    const policy = policyOf([{ glob: 'assets/**', body: { maxBytes: 150 * 1024 } }]);
+    const before = await fileResult(root, 'assets/small.webp', policy);
+    const plan = planFile(before, { allowRenames: true });
+    expect(plan.status).toBe('unchanged');
 
     const render = vi.fn();
     const result = await executeFile(contextFor(root, policy, render), plan, before);
 
     expect(render).not.toHaveBeenCalled();
-    expect(result.status).toBe('skipped');
-    expect(result.reason).toMatch(/byte-budget/);
-    expect(result.needsAttention).toBe(true);
+    expect(result.status).toBe('unchanged');
+    expect(result.encode).toBeUndefined();
+  });
+
+  it('names the floor, the best size and the remedies when no quality fits', async () => {
+    const root = projectWith('overbudget.jpg', 'heavy.jpg');
+    const policy = policyOf([{ glob: 'assets/**', body: { maxBytes: 20 * 1024 } }]);
+    const before = await fileResult(root, 'assets/heavy.jpg', policy);
+    const plan = planFile(before, { allowRenames: true });
+    const original = fs.readFileSync(path.join(root, 'assets', 'heavy.jpg'));
+
+    const result = await executeFile(contextFor(root, policy), plan, before);
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/cannot reach 20 KB at 700x700 without dropping below quality 40/);
+    expect(result.reason).toMatch(/best: [\d.]+ KB at quality 40/);
+    expect(result.reason).toMatch(/Raise maxBytes, lower maxWidth or maxHeight, or allow webp/);
+    // The failure still reports what the encoder managed, which is the half of
+    // the message a user acts on.
+    expect(result.encode?.quality?.chosen).toBe(40);
+    expect(result.encode?.bytes).toBeGreaterThan(20 * 1024);
+    expect(sha256(fs.readFileSync(path.join(root, 'assets', 'heavy.jpg')))).toBe(sha256(original));
+  });
+
+  it('says PNG is lossless rather than pretending a search was possible', async () => {
+    const root = projectWith('noisy.png', 'noisy.png');
+    const policy = policyOf([{ glob: 'assets/**', body: { maxBytes: 200 * 1024 } }]);
+    const before = await fileResult(root, 'assets/noisy.png', policy);
+    const plan = planFile(before, { allowRenames: true });
+    const original = fs.readFileSync(path.join(root, 'assets', 'noisy.png'));
+
+    const result = await executeFile(contextFor(root, policy), plan, before);
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/PNG is lossless, so a maximum-effort re-encode is the only lever/);
+    expect(result.reason).toMatch(/at 400x400, still over the 200 KB ceiling/);
+    expect(result.reason).toMatch(/or allow webp/);
+    expect(result.encode?.quality).toBeUndefined();
+    expect(sha256(fs.readFileSync(path.join(root, 'assets', 'noisy.png')))).toBe(sha256(original));
+  });
+
+  it('says which single quality was tried when the floor leaves no band', async () => {
+    // `floor === start` is a legal config, and the search then has nothing to
+    // descend through. Reporting it as "without dropping below quality 82"
+    // would describe a descent that never happened.
+    const root = projectWith('overbudget.jpg', 'heavy.jpg');
+    const policy = policyOf([
+      { glob: 'assets/**', body: { maxBytes: 20 * 1024, quality: { start: 82, floor: 82 } } },
+    ]);
+    const before = await fileResult(root, 'assets/heavy.jpg', policy);
+    const plan = planFile(before, { allowRenames: true });
+
+    const result = await executeFile(contextFor(root, policy), plan, before);
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/was the only quality tried/);
+    expect(result.reason).toMatch(/quality\.floor to 82 and quality\.start to 82/);
+    expect(result.reason).toMatch(/Lower quality\.floor/);
+    expect(result.reason).not.toMatch(/without dropping below/);
+    expect(result.encode?.quality?.attempts).toBe(1);
+  });
+
+  it('does not suggest WebP to a file that is already WebP', async () => {
+    const root = projectWith('noisy-alpha.webp', 'alpha.webp');
+    const policy = policyOf([{ glob: 'assets/**', body: { maxBytes: 4 * 1024 } }]);
+    const before = await fileResult(root, 'assets/alpha.webp', policy);
+    const plan = planFile(before, { allowRenames: true });
+
+    const result = await executeFile(contextFor(root, policy), plan, before);
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/Raise maxBytes, or lower maxWidth or maxHeight\./);
+    expect(result.reason).not.toMatch(/webp/);
+  });
+
+  it('writes exactly one buffer for a successful budget fix', async () => {
+    const root = projectWith('overbudget.jpg', 'heavy.jpg');
+    const policy = policyOf([{ glob: 'assets/**', body: { maxBytes: 200 * 1024 } }]);
+    const before = await fileResult(root, 'assets/heavy.jpg', policy);
+    const plan = planFile(before, { allowRenames: true });
+
+    const result = await executeFile(contextFor(root, policy), plan, before);
+
+    expect(result.status).toBe('fixed');
+    // Several qualities were encoded; exactly one of them reached the disk.
+    expect((result.encode?.quality?.attempts ?? 0)).toBeGreaterThan(1);
+    expect(fs.readdirSync(path.join(root, 'assets'))).toEqual(['heavy.jpg']);
+    expect(residue(root)).toEqual([]);
   });
 
   it('leaves the original untouched when the candidate fails verification', async () => {
@@ -156,7 +287,7 @@ describe('executeFile', () => {
     const original = fs.readFileSync(path.join(root, 'assets', 'wide.jpg'));
 
     // The encoder "succeeds" and hands back bytes that are still too wide.
-    const context = contextFor(root, policy, async () => original);
+    const context = contextFor(root, policy, renders(original, 'jpeg'));
     const result = await executeFile(context, plan, before);
 
     expect(result.status).toBe('failed');
@@ -192,7 +323,7 @@ describe('executeFile', () => {
     const original = fs.readFileSync(path.join(root, 'assets', 'plain.png'));
     const mtime = fs.statSync(path.join(root, 'assets', 'plain.png')).mtimeMs;
 
-    const result = await executeFile(contextFor(root, policy, async () => original), plan, before);
+    const result = await executeFile(contextFor(root, policy, renders(original)), plan, before);
 
     expect(result.status).toBe('unchanged');
     expect(result.after).toBeUndefined();
@@ -206,7 +337,7 @@ describe('executeFile', () => {
     const plan = planFile(before, { allowRenames: true });
     const jpeg = fs.readFileSync(path.join(FIXTURE_IMAGES, 'compliant.jpg'));
 
-    const result = await executeFile(contextFor(root, policy, async () => jpeg), plan, before);
+    const result = await executeFile(contextFor(root, policy, renders(jpeg, 'jpeg')), plan, before);
 
     expect(result.status).toBe('failed');
     expect(result.reason).toMatch(/produced jpeg where the plan says png/);
@@ -220,7 +351,7 @@ describe('executeFile', () => {
     expect(plan.operations.some((op) => op.op === 'encode' && op.preserveAlpha)).toBe(true);
 
     const flattened = fs.readFileSync(path.join(FIXTURE_IMAGES, 'plain.png'));
-    const result = await executeFile(contextFor(root, policy, async () => flattened), plan, before);
+    const result = await executeFile(contextFor(root, policy, renders(flattened)), plan, before);
 
     expect(result.status).toBe('failed');
     expect(result.reason).toMatch(/preserve transparency and the output has none/);

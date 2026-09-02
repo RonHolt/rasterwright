@@ -66,10 +66,12 @@ function renderResult(result: FixResult, label: string): string[] {
   // did not run. Seeing what was refused is what makes the refusal actionable.
   const { plan } = result;
   const operations = plan.operations.length > 0 ? plan.operations : plan.blockedOperations;
-  // `searched: false`: this report describes encodes that already happened, at
-  // one quality each. The downward search belongs to the plan, and to a phase
-  // that does not exist yet.
-  for (const operation of operations) body.push(...renderOperation(operation, false));
+  // This report describes encodes that already happened, so the quality row is
+  // read off the encoder's own account rather than off the band the plan asked
+  // for. A file nothing encoded passes an empty account and gets the single
+  // start value, which is still not a claim that a search occurred.
+  const executed = { encoded: result.encode };
+  for (const operation of operations) body.push(...renderOperation(operation, executed));
 
   if (result.status === 'fixed' && result.after !== undefined) {
     body.push(row('size', sizeChange(result)));
@@ -110,7 +112,14 @@ function renderSummary(report: FixReport): string[] {
   if (summary.skipped > 0) lines.push(`${plural(summary.skipped, 'file')} skipped`);
   if (summary.blocked > 0) lines.push(`${plural(summary.blocked, 'file')} blocked by a path conflict`);
   if (summary.failed > 0) lines.push(`${plural(summary.failed, 'file')} failed`);
-  lines.push(`${summary.unchanged} already compliant`);
+  // The same split the plan report makes. A file carrying only warnings was
+  // left alone on purpose and is not "already compliant"; folding the two
+  // together would quietly claim a clean bill of health for a file that has
+  // something outstanding, however minor.
+  if (summary.unchangedWithWarnings > 0) {
+    lines.push(`${plural(summary.unchangedWithWarnings, 'warning-only file')} left unchanged`);
+  }
+  lines.push(`${summary.unchanged - summary.unchangedWithWarnings} already compliant`);
 
   if (summary.bytesBefore > 0) {
     const saved = summary.bytesBefore - summary.bytesAfter;
@@ -141,19 +150,6 @@ function renderSummary(report: FixReport): string[] {
   if (report.results.some((result) => result.plan.requiredPermissions.includes('allowRenames'))) {
     lines.push('Rerun with --allow-renames to perform the filename changes above.');
   }
-  if (report.results.some(isBudgetSkip)) {
-    lines.push(
-      'Byte budgets are not enforced yet. A plan whose encode exists to meet maxBytes is',
-      'reported and skipped until the byte-budget phase lands.',
-    );
-  }
 
   return lines;
-}
-
-function isBudgetSkip(result: FixResult): boolean {
-  return (
-    result.status === 'skipped' &&
-    result.plan.operations.some((operation) => operation.op === 'encode' && operation.budgetDriven)
-  );
 }

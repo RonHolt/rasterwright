@@ -37,6 +37,28 @@ function noise(width: number, height: number, seed: number): Buffer {
   return data;
 }
 
+/**
+ * The same noise with an alpha channel that is genuinely used.
+ *
+ * Every 97th pixel is fully transparent, which is enough for sharp's `stats()`
+ * to report `isOpaque: false` while leaving the image visually noise. A budget
+ * fixture has to carry real alpha or the assertion that a quality search
+ * preserves transparency is testing nothing.
+ */
+function noiseAlpha(width: number, height: number, seed: number): Buffer {
+  const random = mulberry32(seed);
+  const pixels = width * height;
+  const data = Buffer.allocUnsafe(pixels * 4);
+  for (let pixel = 0; pixel < pixels; pixel += 1) {
+    const at = pixel * 4;
+    data[at] = Math.floor(random() * 256);
+    data[at + 1] = Math.floor(random() * 256);
+    data[at + 2] = Math.floor(random() * 256);
+    data[at + 3] = pixel % 97 === 0 ? 0 : 255;
+  }
+  return data;
+}
+
 function solid(width: number, height: number, background: string) {
   return sharp({ create: { width, height, channels: 3, background } });
 }
@@ -69,6 +91,26 @@ const FIXTURES: Fixture[] = [
     build: () =>
       sharp(noise(700, 700, 1), { raw: { width: 700, height: 700, channels: 3 } })
         .jpeg({ quality: 95, mozjpeg: true })
+        .toBuffer(),
+  },
+  // Incompressible noise in a lossless format. A maximum-effort re-encode of
+  // this comes out the same size, so any ceiling below it is genuinely
+  // unreachable and the PNG failure path is provoked honestly rather than by
+  // an implausibly small budget.
+  {
+    name: 'noisy.png',
+    build: () =>
+      sharp(noise(400, 400, 7), { raw: { width: 400, height: 400, channels: 3 } })
+        .png({ compressionLevel: 9 })
+        .toBuffer(),
+  },
+  // Over its budget, with alpha that is actually used, so the quality search
+  // has to preserve transparency on the way down.
+  {
+    name: 'noisy-alpha.webp',
+    build: () =>
+      sharp(noiseAlpha(500, 500, 11), { raw: { width: 500, height: 500, channels: 4 } })
+        .webp({ quality: 95, effort: 4 })
         .toBuffer(),
   },
   { name: 'plain.png', build: () => solid(400, 300, '#33aa66').png({ compressionLevel: 9 }).toBuffer() },

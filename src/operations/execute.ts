@@ -2,7 +2,7 @@ import fsp from 'node:fs/promises';
 
 import { backupOriginal } from './backup.js';
 import { commitRename, convertAndReplace, writeCandidate, type TempRegistry } from './atomic.js';
-import { renderCandidate } from './pipeline.js';
+import { renderCandidate, type RenderedCandidate } from './pipeline.js';
 import { EXTENSION_FORMATS } from '../policy/rules/extension.js';
 import { hasMeaningfulAlpha } from '../policy/rules/types.js';
 import { evaluate } from '../policy/evaluate.js';
@@ -15,7 +15,7 @@ import type { Resolver } from '../config/resolve.js';
 import type { StopFlag } from '../utils/signal.js';
 import type {
   EffectiveRule,
-  EncodeOperation,
+  EncodeOutcome,
   FilePlan,
   FileResult,
   Finding,
@@ -78,13 +78,11 @@ export function skipReasonFor(plan: FilePlan): string | undefined {
     case 'unchanged':
       return undefined;
 
-    case 'planned': {
-      const encode = operationOf(plan, 'encode');
-      if (encode?.budgetDriven === true) {
-        return 'the byte-budget search is not implemented yet, so this file is left as it is';
-      }
+    // A budget-driven plan is no longer special. The quality search runs during
+    // rendering, and whether its output may be written is decided by the same
+    // verification every other candidate goes through.
+    case 'planned':
       return undefined;
-    }
 
     case 'requires-permission':
       return `${plan.reasons[0] ?? 'this plan needs a permission it was not given'}; rerun with --allow-renames`;
@@ -271,6 +269,16 @@ async function executePlanned(
   const absoluteSource = toAbsolute(ctx.root, plan.path);
   const absoluteTarget = toAbsolute(ctx.root, plan.targetPath);
 
+  // Every result from step 5 onward carries what the encoder did, success or
+  // failure. On a failure that is the actionable half of the report: the
+  // quality the search reached, and the smallest output it could produce.
+  let rendered: RenderedCandidate | undefined;
+  const report = (status: FixResult['status'], reason?: string): FixResult => {
+    const result = outcome(plan, status, measured, reason);
+    if (rendered !== undefined) result.encode = encodeOutcome(rendered);
+    return result;
+  };
+
   // 3. Read the original once. Its bytes are the encoder's input, the backup's
   //    contents, and (for a rename-only plan) the verified output.
   let source: Buffer;
@@ -304,13 +312,18 @@ async function executePlanned(
 
   // 5. Produce the candidate. A truncated JPEG only fails here, inside
   //    `toBuffer()` (17.18), so the decoder's own message is what gets reported.
+  //
+  //    The byte-budget search happens inside this call. It is an optimization
+  //    over the encoder and decides nothing: a result it could not bring under
+  //    the ceiling comes back anyway and is refused at step 7 on the evidence.
   let candidate: Buffer;
   if (encode === undefined) {
     candidate = source;
   } else {
     try {
       const render = ctx.render ?? renderCandidate;
-      candidate = await render(source, plan, requireImage(before, plan));
+      rendered = await render(source, plan, requireImage(before, plan));
+      candidate = rendered.buffer;
     } catch (error) {
       return outcome(plan, 'failed', measured, messageOf(error));
     }
@@ -321,7 +334,7 @@ async function executePlanned(
   //    with and the name the rule was resolved for.
   const inspected = await inspectBuffer(plan.targetPath, candidate);
   if (!inspected.ok) {
-    return outcome(plan, 'failed', measured, `the candidate could not be inspected: ${inspected.error}`);
+    return report('failed', `the candidate could not be inspected: ${inspected.error}`);
   }
 
   // 7. Verify against the policy of where the bytes are going, not where they
@@ -329,10 +342,10 @@ async function executePlanned(
   const rule = ctx.resolver.resolve(plan.targetPath);
   const verification = verifyCandidate(inspected.info, plan, rule, ctx.allGlobs);
   if (verification.assertions.length > 0) {
-    return outcome(plan, 'failed', measured, verification.assertions.join('; '));
+    return report('failed', verification.assertions.join('; '));
   }
   if (verification.blocking.length > 0) {
-    return outcome(plan, 'failed', measured, refusalFor(verification.blocking, encode));
+    return report('failed', refusalFor(verification.blocking, rendered, inspected.info));
   }
 
   // 8. Bytes that did not change are not worth writing. This is checked *after*
@@ -341,14 +354,14 @@ async function executePlanned(
   //    success that happened to need no write.
   const unchangedInPlace =
     plan.targetPath === plan.path && inspected.info.contentHash === sha256(source);
-  if (unchangedInPlace) return outcome(plan, 'unchanged', measured);
+  if (unchangedInPlace) return report('unchanged');
 
   // 9. Everything below writes.
   if (ctx.backupDir !== undefined) {
     try {
       await backupOriginal(ctx.backupDir, plan.path, source);
     } catch (error) {
-      return outcome(plan, 'failed', measured, messageOf(error));
+      return report('failed', messageOf(error));
     }
   }
 
@@ -367,7 +380,7 @@ async function executePlanned(
       await convertAndReplace(absoluteSource, absoluteTarget, candidate, mode, ctx.registry);
     }
   } catch (error) {
-    return outcome(plan, 'failed', measured, messageOf(error));
+    return report('failed', messageOf(error));
   }
 
   const after: FixMeasurement = {
@@ -377,7 +390,7 @@ async function executePlanned(
     format: inspected.info.format,
   };
 
-  const result = outcome(plan, 'fixed', measured);
+  const result = report('fixed');
   result.applied = plan.operations.map((operation) => operation.op);
   result.after = after;
   result.savingsPct =
@@ -392,26 +405,77 @@ async function executePlanned(
  *
  * A missed byte ceiling gets its own sentence. The raw `maxBytes` finding says
  * the file is too big, which reads as a bug when the user just asked
- * Rasterwright to make it smaller; what actually happened is that the single
- * encode at `quality.start` was not enough and the search that would go lower
- * does not exist yet.
+ * Rasterwright to make it smaller. What actually happened is that the search
+ * ran out of room, so the message says where it stopped, what the smallest
+ * output it could produce was, and which levers the user still has. Those
+ * levers are all manual on purpose: dropping further on its own would mean
+ * either encoding below a floor the policy set or changing the output's
+ * dimensions or format behind the plan's back. See 04 section 19.
  */
-function refusalFor(blocking: readonly Finding[], encode: EncodeOperation | undefined): string {
+function refusalFor(
+  blocking: readonly Finding[],
+  rendered: RenderedCandidate | undefined,
+  candidate: ImageInfo,
+): string {
   const ceiling = blocking.find((finding) => finding.check === 'maxBytes');
-  if (ceiling !== undefined && encode !== undefined) {
-    const at =
-      encode.quality === undefined
-        ? 'a maximum-effort lossless re-encode'
-        : `quality ${encode.quality.start}`;
-    const actual = typeof ceiling.actual === 'number' ? formatBytes(ceiling.actual) : `${ceiling.actual}`;
-    const allowed =
-      typeof ceiling.allowed === 'number' ? formatBytes(ceiling.allowed) : `${ceiling.allowed}`;
+  if (ceiling === undefined || rendered === undefined) {
+    return blocking.map((finding) => finding.message).join('; ');
+  }
+
+  const allowed =
+    typeof ceiling.allowed === 'number' ? formatBytes(ceiling.allowed) : `${ceiling.allowed}`;
+  const at = `${candidate.width}x${candidate.height}`;
+  const best = formatBytes(rendered.bytes);
+  const remedies = REMEDIES[rendered.format];
+
+  if (rendered.quality === undefined) {
     return (
-      `${at} produced ${actual}, which is still over the ${allowed} ceiling; ` +
-      'the byte-budget quality search is not implemented yet, so the original is left as it is'
+      `PNG is lossless, so a maximum-effort re-encode is the only lever; it produced ` +
+      `${best} at ${at}, still over the ${allowed} ceiling. ${remedies}`
     );
   }
-  return blocking.map((finding) => finding.message).join('; ');
+
+  // No search happened, so saying "without dropping below the floor" would
+  // describe a descent that never took place. The only way to be over the
+  // ceiling after a single encode is a policy whose floor equals its start,
+  // which leaves the search no band at all - and that is the thing to say.
+  const { start, chosen, floor, searched } = rendered.quality;
+  if (!searched) {
+    return (
+      `quality ${chosen} produced ${best} at ${at}, over the ${allowed} ceiling, and was the ` +
+      `only quality tried: the policy sets quality.floor to ${floor} and quality.start to ` +
+      `${start}, leaving no band below the start to search. Lower quality.floor, or ${lowered(remedies)}`
+    );
+  }
+  return (
+    `cannot reach ${allowed} at ${at} without dropping below quality ` +
+    `${floor} (best: ${best} at quality ${chosen}). ${remedies}`
+  );
+}
+
+/** The remedy sentence as a clause, for a message that already began one. */
+function lowered(remedies: string): string {
+  return remedies.charAt(0).toLowerCase() + remedies.slice(1);
+}
+
+/**
+ * What a user can do about a ceiling Rasterwright could not reach.
+ *
+ * Named per format because suggesting WebP to a file that is already WebP is
+ * noise, and suggesting JPEG to one carrying transparency is advice that would
+ * destroy the image.
+ */
+const REMEDIES: Record<ImageFormat, string> = {
+  jpeg: 'Raise maxBytes, lower maxWidth or maxHeight, or allow webp for this glob.',
+  png: 'Raise maxBytes, lower maxWidth or maxHeight, or allow webp for this glob.',
+  webp: 'Raise maxBytes, or lower maxWidth or maxHeight.',
+};
+
+/** The report-facing half of a render: everything but the bytes themselves. */
+function encodeOutcome(rendered: RenderedCandidate): EncodeOutcome {
+  const outcome: EncodeOutcome = { format: rendered.format, bytes: rendered.bytes };
+  if (rendered.quality !== undefined) outcome.quality = rendered.quality;
+  return outcome;
 }
 
 /**

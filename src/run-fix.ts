@@ -101,7 +101,13 @@ export async function planRun(
     options,
   );
 
-  const planned = check.files.map((file) => planFile(file, permissions));
+  // The resolver is handed to the planner so a plan that moves a file can read
+  // the policy of where it is going. `resolve` is a pure function of the loaded
+  // config, so planning stays deterministic and filesystem-free.
+  const resolver = createResolver(config.policy);
+  const planned = check.files.map((file) =>
+    planFile(file, permissions, { ruleFor: (path) => resolver.resolve(path) }),
+  );
   // Taken from the caller when there is one, so a run derives path semantics
   // exactly once and preflight, the executor, the recovery pass and every
   // rename are guaranteed to be answering the same question the same way.
@@ -214,10 +220,11 @@ export async function runFix(
   });
   const before = new Map(check.files.map((file) => [file.path, file]));
 
-  // Only the plans this run will actually execute. A file skipped for its byte
-  // budget is one nothing will open for writing, so warning that git has no
-  // copy of it describes a risk that does not exist, and sweeping its directory
-  // is a write nothing asked for.
+  // Only the plans this run will actually execute. A file the run will not open
+  // for writing must not make git warn about a risk that does not exist, and
+  // must not get its directory swept, which is a write nothing asked for. The
+  // same predicate the executor uses, so the two can never disagree about which
+  // files are in scope.
   const executing = plans.filter(
     (plan) => plan.status === 'planned' && skipReasonFor(plan) === undefined,
   );
@@ -307,6 +314,9 @@ export async function runFix(
       checked: results.length,
       fixed: count('fixed'),
       unchanged: count('unchanged'),
+      unchangedWithWarnings: results.filter(
+        (result) => result.status === 'unchanged' && result.plan.warnings.length > 0,
+      ).length,
       skipped: count('skipped'),
       blocked: count('blocked'),
       failed: count('failed'),

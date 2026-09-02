@@ -752,3 +752,151 @@ describe('planning against a real resolved policy', () => {
     expect(planWithPolicy(policy, fine).status).toBe('unchanged');
   });
 });
+
+/**
+ * A format conversion moves the file, and the rule governing where it lands is
+ * the one `verifyCandidate` will judge the output against. These tests pin that
+ * the plan is built against that rule and not against the one the source
+ * happened to match, because the two disagreeing is not a cosmetic mismatch:
+ * the byte-budget search would optimize for a ceiling nobody checks.
+ */
+describe('a conversion that moves the file under another rule', () => {
+  /** Plan through a real resolver, so `ruleFor` is exactly what the CLI supplies. */
+  function planAcross(policy: Policy, info: ImageInfo): FilePlan {
+    const resolver = createResolver(policy);
+    return planFile(evaluate(info, resolver.resolve(info.path), resolver.globs()), ALLOW_RENAMES, {
+      ruleFor: (path) => resolver.resolve(path),
+    });
+  }
+
+  function policyOf(rules: Policy['rules']): Policy {
+    return { version: 1, defaults: {}, rules };
+  }
+
+  const png = (overrides: Partial<ImageInfo> = {}): ImageInfo =>
+    image({ path: 'assets/logo.png', format: 'png', bytes: 480_000, ...overrides });
+
+  it('takes the ceiling from the target rule when the source rule sets none', () => {
+    // The case that was reported as unfixable before this existed: the encode
+    // ran with no ceiling, produced bytes over the target's, and verification
+    // refused a file a search could have brought under.
+    const result = planAcross(
+      policyOf([
+        { glob: 'assets/*.png', body: { format: 'webp' } },
+        { glob: 'assets/*.webp', body: { maxBytes: 100 * 1024 } },
+      ]),
+      png(),
+    );
+
+    expect(result.targetPath).toBe('assets/logo.webp');
+    expect(encodeIn(result).maxBytes).toBe(100 * 1024);
+    expect(result.requiresVerification).toBe(true);
+    // Not budget-driven: the conversion is why this file is being encoded, and
+    // the ceiling is a limit that also applies. The report labels those apart.
+    expect(encodeIn(result).budgetDriven).toBe(false);
+    expect(result.notes.join(' ')).toMatch(/100 KB ceiling comes from assets\/\*\.webp/);
+  });
+
+  it('does not chase a source ceiling the target rule relaxes', () => {
+    // Searching down to 50 KB here would degrade the image to satisfy a rule
+    // that stops applying the moment the file moves, and would then report the
+    // result as fixed against a ceiling nothing checks.
+    const result = planAcross(
+      policyOf([
+        { glob: 'assets/*.png', body: { format: 'webp', maxBytes: 50 * 1024 } },
+        { glob: 'assets/*.webp', body: { maxBytes: 400 * 1024 } },
+      ]),
+      png(),
+    );
+
+    expect(encodeIn(result).maxBytes).toBe(400 * 1024);
+    expect(result.notes.join(' ')).toMatch(/400 KB ceiling comes from assets\/\*\.webp/);
+  });
+
+  it('takes the quality band from the target rule too', () => {
+    // The band is the dial the search turns to meet the target's ceiling, so it
+    // has to come from the same place the ceiling does.
+    const result = planAcross(
+      policyOf([
+        { glob: 'assets/*.png', body: { format: 'webp', quality: { start: 95, floor: 90 } } },
+        { glob: 'assets/*.webp', body: { maxBytes: 100 * 1024, quality: { start: 70, floor: 30 } } },
+      ]),
+      png(),
+    );
+
+    expect(encodeIn(result).quality).toEqual({ start: 70, floor: 30 });
+  });
+
+  it('resizes to the target rule width even where the source rule allowed it', () => {
+    const result = planAcross(
+      policyOf([
+        { glob: 'assets/*.png', body: { format: 'webp', maxWidth: 2000 } },
+        { glob: 'assets/*.webp', body: { maxWidth: 400 } },
+      ]),
+      png({ width: 800, height: 600 }),
+    );
+
+    expect(ops(result)).toEqual(['resize', 'encode', 'rename']);
+    const resized = result.operations.find((operation) => operation.op === 'resize');
+    expect(resized?.to).toEqual({ width: 400, height: 300 });
+    expect(result.notes.join(' ')).toMatch(/resize target comes from the rule governing the file after/);
+  });
+
+  it('keeps the tighter of the two widths when the source rule is the stricter one', () => {
+    const result = planAcross(
+      policyOf([
+        { glob: 'assets/*.png', body: { format: 'webp', maxWidth: 300 } },
+        { glob: 'assets/*.webp', body: { maxWidth: 600 } },
+      ]),
+      png({ width: 800, height: 600 }),
+    );
+
+    const resized = result.operations.find((operation) => operation.op === 'resize');
+    expect(resized?.to).toEqual({ width: 300, height: 225 });
+  });
+
+  it('applies no ceiling at all when the target path matches no rule', () => {
+    // The file leaves policy. Carrying the old number forward would enforce a
+    // rule that no longer governs the file, and silently.
+    const result = planAcross(
+      policyOf([{ glob: 'assets/*.png', body: { format: 'webp', maxBytes: 50 * 1024 } }]),
+      png(),
+    );
+
+    expect(result.targetPath).toBe('assets/logo.webp');
+    expect(encodeIn(result).maxBytes).toBeUndefined();
+    expect(result.requiresVerification).toBe(false);
+    expect(result.notes.join(' ')).toMatch(/matches no rule, so no byte ceiling applies/);
+  });
+
+  it('leaves a pixel-free rename alone even when the target rule is stricter', () => {
+    // The destination's limit rides along with a rewrite that is already
+    // happening; it never causes one. Re-encoding here would spend generation
+    // loss on a filename change, and on a 16-bit source it would turn the only
+    // workable plan into an unsupported one.
+    const result = planAcross(
+      policyOf([
+        { glob: 'assets/*.png', body: { format: 'webp' } },
+        { glob: 'assets/*.webp', body: { maxWidth: 100 } },
+      ]),
+      image({ path: 'assets/logo.png', format: 'webp', width: 800, height: 600 }),
+    );
+
+    expect(ops(result)).toEqual(['rename']);
+    expect(result.operations.some((operation) => operation.op === 'encode')).toBe(false);
+  });
+
+  it('behaves exactly as before when no ruleFor is supplied', () => {
+    // Every existing caller and every plan that does not move a file.
+    const info = png();
+    const resolver = createResolver(
+      policyOf([
+        { glob: 'assets/*.png', body: { format: 'webp', maxBytes: 50 * 1024 } },
+        { glob: 'assets/*.webp', body: { maxBytes: 400 * 1024 } },
+      ]),
+    );
+    const evaluated = evaluate(info, resolver.resolve(info.path), resolver.globs());
+
+    expect(encodeIn(planFile(evaluated, ALLOW_RENAMES)).maxBytes).toBe(50 * 1024);
+  });
+});

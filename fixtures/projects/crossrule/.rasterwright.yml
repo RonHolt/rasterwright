@@ -1,0 +1,20 @@
+# A format conversion moves a file under a different rule, and it is that rule
+# the output is judged against. Both directions are here on purpose.
+version: 1
+
+rules:
+  # Tighter at the destination. The source rule sets no ceiling at all; the one
+  # the encode has to meet belongs to the path the conversion moves it to.
+  "tighter/*.png":
+    format: webp
+  "tighter/*.webp":
+    maxBytes: 100kb
+
+  # Looser at the destination. The source's 50kb stops applying the moment the
+  # file moves, so searching down to meet it would degrade the image to satisfy
+  # a rule that no longer governs it.
+  "looser/*.png":
+    format: webp
+    maxBytes: 50kb
+  "looser/*.webp":
+    maxBytes: 400kb

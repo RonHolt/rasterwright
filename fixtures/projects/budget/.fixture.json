@@ -1,0 +1,10 @@
+{
+  "images": {
+    "assets/heavy.jpg": "overbudget.jpg",
+    "assets/small.webp": "sample.webp",
+    "assets/alpha.webp": "noisy-alpha.webp",
+    "assets/noisy.png": "noisy.png",
+    "assets/impossible/tiny.jpg": "overbudget.jpg",
+    "assets/resized/wide.jpg": "overbudget.jpg"
+  }
+}
