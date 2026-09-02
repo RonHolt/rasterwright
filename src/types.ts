@@ -49,6 +49,14 @@ export interface ImageInfo {
    * which callers must treat as "assume transparent".
    */
   isOpaque: boolean | null;
+  /**
+   * Bits per channel: 8 for every ordinary web image.
+   *
+   * A 16-bit source matters because Sharp's encoders write 8 bits per channel,
+   * so any rewrite of one silently halves its precision. v0 refuses to rewrite
+   * those rather than quietly degrade them.
+   */
+  bitDepth: number;
   /** libvips' interpretation of the pixel data: 'srgb', 'cmyk', 'b-w', ... */
   pixelColorSpace: string;
   colorSpaceStatus: ColorSpaceStatus;
@@ -394,6 +402,19 @@ export interface EncodeOperation {
    * When true, execution must measure the output and fail if it does not fit.
    */
   outcomeRequiresVerification: boolean;
+  /**
+   * Carry the source's EXIF orientation flag through to the output instead of
+   * letting the encoder drop it.
+   *
+   * Only ever true under `autoOrient: false` on a file whose flag is not 1, when
+   * some *other* error forced a rewrite. Sharp strips metadata by default, so a
+   * plain re-encode of such a file would silently clear the flag while leaving
+   * the pixels unrotated, and the image would display rotated. Preserving the
+   * flag keeps the displayed image identical, at the cost of a minimal EXIF
+   * block in the output: a later `check` reports that as a metadata warning,
+   * which is expected and never a reason to rewrite the file again.
+   */
+  preservesOrientation: boolean;
 }
 
 /**
@@ -546,4 +567,97 @@ export interface FixPlanReport {
    * repeating it would bury the files a fix would actually touch.
    */
   files: FilePlan[];
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Fix execution
+ *
+ * Nothing in this build produces these yet: plain `rasterwright fix` still
+ * exits 2. They are here so the execution layer and the report shape are agreed
+ * before anything is wired, and so the pieces landing underneath it - the
+ * pipeline, the atomic writer, the git survey - can be written against the
+ * result they will eventually fill in.
+ * ---------------------------------------------------------------------------
+ */
+
+/**
+ * What a fix run did to one file.
+ *
+ * - `fixed`     - a verified candidate replaced the original.
+ * - `unchanged` - the plan was empty. Nothing was opened for writing.
+ * - `skipped`   - a plan exists but this run will not execute it, because it
+ *                 needs a permission, is unsupported, is unfixable, or depends
+ *                 on a byte-budget search that does not exist yet.
+ * - `blocked`   - batch preflight refused the plan's output path.
+ * - `failed`    - execution or verification failed. The original is untouched.
+ */
+export type FixStatus = 'fixed' | 'unchanged' | 'skipped' | 'blocked' | 'failed';
+
+/** What a file looked like, in the terms a report needs to compare before and after. */
+export type FixMeasurement = Pick<ImageInfo, 'bytes' | 'width' | 'height' | 'format'>;
+
+export interface FixResult {
+  path: string;
+  /** Where the file ended up. Differs from `path` only on a rename. */
+  outputPath: string;
+  status: FixStatus;
+  /** The plan as batch preflight left it. */
+  plan: FilePlan;
+  /**
+   * Names of the operations actually executed, in order. Empty unless `status`
+   * is `fixed`. Names rather than the operations themselves: `plan` already
+   * carries those, and two copies would be two things to keep in agreement.
+   */
+  applied: PlannedOperation['op'][];
+  before: FixMeasurement;
+  /** Present only when a new file was written. */
+  after?: FixMeasurement;
+  /** Bytes saved as a percentage of `before.bytes`. Negative when the file grew. */
+  savingsPct?: number;
+  /** Why the file failed, was skipped or was blocked. Plain language. */
+  reason?: string;
+  warnings: string[];
+  /** Sorts to the top of the report, and later to the top of the review page. */
+  needsAttention: boolean;
+}
+
+export interface FixSummary {
+  /** Governed images that were inspected. */
+  checked: number;
+  fixed: number;
+  unchanged: number;
+  skipped: number;
+  blocked: number;
+  failed: number;
+  bytesBefore: number;
+  bytesAfter: number;
+  /** True when the run stopped early on SIGINT. */
+  interrupted: boolean;
+  /** Files reached before the run ended, which differs from `checked` only after an interrupt. */
+  completed: number;
+  /** Image files found but matched by no rule. Silently skipped. */
+  ignored: number;
+}
+
+export interface FixReport {
+  rasterwrightVersion: string;
+  /**
+   * Identifies this run. `review` retains it so a page can name the run that
+   * produced the files it is describing.
+   */
+  runId: string;
+  /** Recorded so a surprising diff after an upgrade is explainable. */
+  engine: { sharp: string; vips: string };
+  /** Always false. A dry run produces a `FixPlanReport` instead. */
+  dryRun: false;
+  permissions: FixPermissions;
+  configPath: string;
+  root: string;
+  summary: FixSummary;
+  /** Path collisions batch preflight found. Every one corresponds to a `blocked` result. */
+  conflicts: PlanSetConflict[];
+  /** Every governed file, `unchanged` ones included. */
+  results: FixResult[];
+  diagnostics: string[];
 }

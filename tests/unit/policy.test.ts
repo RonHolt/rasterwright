@@ -18,6 +18,7 @@ function image(overrides: Partial<ImageInfo> = {}): ImageInfo {
     storedHeight: 600,
     hasAlpha: false,
     isOpaque: null,
+    bitDepth: 8,
     pixelColorSpace: 'srgb',
     colorSpaceStatus: 'srgb',
     hasIccProfile: false,

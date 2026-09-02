@@ -12,6 +12,16 @@ import type { ColorSpaceStatus, ImageFormat, ImageInfo } from '../types.js';
  *
  * Strictly read-only: it opens files, decodes headers, and (only when an alpha
  * channel exists) asks libvips for channel statistics. Nothing is written.
+ *
+ * ## Why the buffer half is separate
+ *
+ * `inspect()` reads a whole file and derives everything from the bytes, so the
+ * bytes are the real input and the path is only a label. `inspectBuffer()` is
+ * that half on its own, and execution needs it: a candidate has to be inspected
+ * and verified *before* it is written anywhere, otherwise a crash during
+ * verification leaves a file on disk that nothing has vouched for. Splitting it
+ * out also means the candidate is measured by exactly the same inspector the
+ * read path uses, rather than by a parallel implementation that can drift.
  */
 
 export type InspectResult =
@@ -35,6 +45,18 @@ export async function inspect(root: string, relativePath: string): Promise<Inspe
     return { ok: false, path: relativePath, error: `could not read file: ${(error as Error).message}` };
   }
 
+  return inspectBuffer(relativePath, buffer);
+}
+
+/**
+ * Everything `inspect()` knows, from bytes that need not be on disk.
+ *
+ * `relativePath` is a label: it becomes `ImageInfo.path` and is used in error
+ * messages, and nothing here opens it. Pass the path the bytes are *going* to
+ * live at, which for a candidate is the plan's target path rather than its
+ * source.
+ */
+export async function inspectBuffer(relativePath: string, buffer: Buffer): Promise<InspectResult> {
   let metadata: Metadata;
   try {
     metadata = await sharp(buffer, { failOn: 'error' }).metadata();
@@ -91,6 +113,7 @@ export async function inspect(root: string, relativePath: string): Promise<Inspe
     storedHeight,
     hasAlpha,
     isOpaque,
+    bitDepth: bitDepthOf(metadata.depth),
     pixelColorSpace,
     colorSpaceStatus: classifyColorSpace(pixelColorSpace, iccSummary),
     hasIccProfile: icc !== undefined,
@@ -112,6 +135,33 @@ export async function inspect(root: string, relativePath: string): Promise<Inspe
   };
 
   return { ok: true, info };
+}
+
+/**
+ * Bits per channel, from libvips' band format name.
+ *
+ * Everything the web deals in is `uchar`. `ushort` is the one that matters:
+ * a 16-bit PNG re-encodes to 8 bits per channel without complaint, which is
+ * exactly the kind of silent degradation Rasterwright refuses to perform.
+ * An unrecognised format is reported as 8 rather than guessed at, because
+ * treating an ordinary image as exotic would block fixes for no reason.
+ */
+const BAND_FORMAT_BITS: Record<string, number> = {
+  uchar: 8,
+  char: 8,
+  ushort: 16,
+  short: 16,
+  uint: 32,
+  int: 32,
+  float: 32,
+  complex: 64,
+  double: 64,
+  dpcomplex: 128,
+};
+
+export function bitDepthOf(depth: string | undefined): number {
+  if (depth === undefined) return 8;
+  return BAND_FORMAT_BITS[depth] ?? 8;
 }
 
 /**

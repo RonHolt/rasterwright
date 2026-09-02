@@ -1,0 +1,15 @@
+# Sharp's encoders write 8 bits per channel. Re-encoding a 16-bit source to
+# satisfy a width limit would silently halve its precision, so v0 reports the
+# file as unsupported and leaves it alone.
+#
+# `assets/deep-named.jpg` is the same 16-bit PNG behind a .jpg extension. Its
+# plan is a rename and nothing else, which touches no pixels, so the depth is
+# irrelevant to it and the file is fixable.
+version: 1
+
+rules:
+  "assets/*.png":
+    maxWidth: 800
+
+  "assets/*.jpg":
+    format: png

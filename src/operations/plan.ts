@@ -137,7 +137,31 @@ export function planFile(file: FileResult, permissions: FixPermissions): FilePla
   const targetFormat = body.format ?? image.format;
   const convertsFormat = image.format !== targetFormat;
   const rewrites = operations.length > 0 || convertsFormat || has('maxBytes');
-  const encoding = rewrites ? encode(image, body, targetFormat, has('maxBytes')) : undefined;
+  // Under `autoOrient: false` the orientation flag is policy, not a defect, and
+  // no `autoOrient` operation is planned. But an encoder drops metadata by
+  // default, so a rewrite some *other* error demanded would clear the flag while
+  // leaving the pixels unrotated, and the image would display rotated. That is
+  // silent data damage on a file the user explicitly asked to be left alone, so
+  // the encode carries the flag through instead.
+  const preservesOrientation = image.orientation !== 1 && !has('orientation');
+  const encoding = rewrites
+    ? encode(image, body, targetFormat, has('maxBytes'), preservesOrientation)
+    : undefined;
+
+  // Sharp's encoders write 8 bits per channel, so re-encoding a 16-bit source
+  // halves its precision without saying so. A file whose whole point is the
+  // extra depth is not something to silently flatten in pursuit of a width
+  // limit, and there is no lossless way to honour both. Checked here rather
+  // than earlier because a rename-only plan touches no pixels and is fine.
+  if (encoding !== undefined && image.bitDepth !== 8) {
+    return {
+      ...base,
+      status: 'unsupported',
+      unresolved: errorChecks,
+      reasons: [`${image.bitDepth}-bit source; v0 encodes 8-bit only`],
+    };
+  }
+
   if (encoding !== undefined) operations.push(encoding);
 
   // 5. Filename last, so no output has to be reopened under a new name.
@@ -183,7 +207,7 @@ export function planFile(file: FileResult, permissions: FixPermissions): FilePla
     normalizedDuringRewrite:
       encoding !== undefined && encoding.stripMetadata && warnings.includes('metadata') ? ['metadata'] : [],
     requiresVerification: encoding?.outcomeRequiresVerification ?? false,
-    notes: notesFor(file, encoding, rename !== undefined),
+    notes: notesFor(file, image, encoding, rename !== undefined),
   };
 }
 
@@ -225,11 +249,13 @@ function encode(
   body: RuleBody,
   format: ImageFormat,
   budgetDriven: boolean,
+  preservesOrientation: boolean,
 ): EncodeOperation {
   const operation: EncodeOperation = {
     op: 'encode',
     format,
     budgetDriven,
+    preservesOrientation,
     stripMetadata: body.stripMetadata === true,
     preserveAlpha: hasMeaningfulAlpha(image),
     // Generation loss: pixels that have already been through a lossy encoder
@@ -259,8 +285,24 @@ function pathForFormat(filePath: string, format: ImageFormat): string {
 }
 
 /** Caveats about a plan that is complete but worth reading twice. */
-function notesFor(file: FileResult, encoding: EncodeOperation | undefined, renames: boolean): string[] {
+function notesFor(
+  file: FileResult,
+  image: ImageInfo,
+  encoding: EncodeOperation | undefined,
+  renames: boolean,
+): string[] {
   const notes: string[] = [];
+
+  // Preserving the flag means writing a minimal EXIF block into a file that may
+  // have had none. That is a visible consequence of a rewrite the user did not
+  // ask for, so the plan says it out loud rather than letting it turn up as a
+  // surprise in the next `check`.
+  if (encoding?.preservesOrientation === true) {
+    notes.push(
+      `autoOrient is off, so EXIF orientation ${image.orientation} is preserved through the rewrite ` +
+        'and a minimal EXIF block remains; later checks report that as a metadata warning',
+    );
+  }
 
   // PNG has no quality dial. Lossless re-encoding at maximum effort buys a few
   // percent and nothing more, and palette quantization is deliberately not in

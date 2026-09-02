@@ -365,6 +365,7 @@ another image next to it.
         "storedHeight": 200,
         "hasAlpha": true,
         "isOpaque": false,
+        "bitDepth": 8,
         "pixelColorSpace": "srgb",
         "colorSpaceStatus": "srgb",
         "hasIccProfile": false,
@@ -506,6 +507,33 @@ encoded once, and renamed once. Operations are emitted in execution order:
 
 A compliant file is never re-encoded. A file is never encoded twice in one run.
 
+### `autoOrient: false` keeps the flag, even through a rewrite
+
+`autoOrient: false` says "leave the orientation flag alone". It does not say
+"leave the file alone", so some other error can still force a rewrite, and an
+encoder drops metadata by default. Left to itself that rewrite would clear the
+flag while leaving the pixels unrotated, and an image that displayed as 400x600
+would start displaying as 600x400.
+
+So the encode carries the flag through instead, and the plan says so:
+
+```
+→ kept-oversized/rotated.jpg
+
+    resize        400x600 -> 300x450
+    encode        JPEG
+    quality       82
+    orientation   EXIF flag preserved; the pixels are not rotated
+    re-encode     lossy source re-encoded; some generation loss
+    metadata      strip during the rewrite above
+    note          autoOrient is off, so EXIF orientation 6 is preserved through the rewrite and a minimal EXIF block remains; later checks report that as a metadata warning
+```
+
+The note is the honest half. Preserving the flag means writing a small EXIF
+block into a file that may have had none, so the next `check` reports a metadata
+warning on it. That is expected. Warnings never justify a rewrite, so the file is
+not touched again.
+
 ### File statuses
 
 | Status | Meaning |
@@ -515,7 +543,7 @@ A compliant file is never re-encoded. A file is never encoded twice in one run.
 | `requires-permission` | A plan exists, but the run lacks permission for it. |
 | `blocked` | The plan is complete and permitted, but its output path collides with another plan or with something that already exists. A blocked file can carry more than one conflict. |
 | `unfixable` | No safe transform resolves it, or the image could not be decoded. |
-| `unsupported` | v0 does not transform this kind of image at all (today: animated). |
+| `unsupported` | v0 does not rewrite this kind of image at all. Today: animated images, and 16-bit sources, whose precision an 8-bit encoder would silently halve. A rename touches no pixels, so an extension correction on either is still performed. |
 
 ### `--allow-renames` is execution permission, not policy
 

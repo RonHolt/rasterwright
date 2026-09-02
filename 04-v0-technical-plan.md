@@ -945,3 +945,249 @@ grants the flag is therefore the first run that can see the collision, and the
 report says so explicitly rather than letting it read as a regression. This is
 also why `BLOCKED` sits directly after `REQUIRES PERMISSION`: it is the section
 that appears when the previous one is granted.
+
+## 17. Decisions from building the execution foundation
+
+Added 2026-09-01, after section 16. This phase landed the pieces execution is
+made of - the Sharp pipeline, the atomic writer, the git survey - with unit
+tests and **no wiring**. Plain `rasterwright fix` still exits 2, and `check` and
+`fix --dry-run` remain read-only under the same snapshot tests. Only one shipped
+behaviour changed, and it is a planner fix: item 1 below.
+
+**1. `autoOrient: false` needs the orientation flag preserved through a rewrite
+it did not ask for.** This was a live bug, not a hypothetical. `checkOrientation`
+returns no finding under `autoOrient: false`, so `planFile()` emits no
+`autoOrient` operation. If any *other* error forces a rewrite of that same file -
+a `maxWidth` violation, say - Sharp's default metadata stripping clears the flag
+while leaving the pixels unrotated, and the image starts displaying rotated. A
+600x400 file that displayed as 400x600 would display as 600x400.
+
+The fix is `preservesOrientation` on `EncodeOperation`, set when
+`image.orientation !== 1` and no `autoOrient` operation is planned. Execution
+writes the flag back with `withExif({ IFD0: { Orientation: '<n>' } })`, which was
+chosen over the two alternatives on measurement:
+
+| call | flag | ICC written | EXIF written |
+|---|---|---|---|
+| `withExif({IFD0:{Orientation}})` | kept | none | minimal block |
+| `withMetadata({ orientation })` | kept | 480 B sRGB profile | yes |
+| `keepExif()` | kept | none | the source's entire block |
+
+**What that call actually does is not what it looks like.** Sharp ignores the
+orientation *value* passed to `withExif` and fills it in from the source:
+passing `'1'` against a source flagged 6 still yields 6, and so does
+`withExif({IFD0:{Software:'x'}})`. What preserves the flag is that `withExif` is
+called at all, which makes the encode one that writes an EXIF block. The value
+is written as the source's own orientation anyway, because a call that reads as
+an assignment Sharp overrules is a trap for the next person. The property the
+tests assert is the one that actually holds: the output flag equals the input
+flag, for orientations 3, 6 and 8 alike.
+
+`withMetadata()` is never used as a generic "keep": embedding an sRGB profile as
+a side effect contradicts both `stripMetadata: true` and the keep-the-source
+profile branch below.
+
+**The consequence is stated in the plan rather than discovered later.** A file
+that had no EXIF now has a minimal block, so the next `check` reports a metadata
+warning. Warnings never justify a rewrite, so the second run still writes zero
+files and idempotence holds. But the dry run has to say so or it is no longer an
+honest description of the run, so the plan carries a note and the human report
+carries an `orientation` line on the encode.
+
+`stripMetadata: false` needs none of this: `keepMetadata()` already carries the
+flag through, and calling `withExif()` on top of it would replace the whole EXIF
+block the policy asked to keep.
+
+**2. The planner speaks in displayed dimensions; the encoder resizes stored
+pixels.** Those agree except in exactly one case: a quarter-turn orientation
+(5 to 8) that is being preserved rather than applied. There the stored image is
+the displayed one with its axes swapped, and handing the resizer the displayed
+target would fit the long stored edge into the short limit. A 400x600 displayed
+image under `maxWidth: 300` would come out 133x200 instead of 300x450. The
+pipeline swaps the target for that case and only that case.
+
+**3. `fit: 'inside'` can land under the planned dimensions, and that is
+correct.** The planner floors width and height independently from one ratio, so
+the pair it names is not always exactly the source's aspect ratio; Sharp honours
+the tighter constraint and preserves the aspect ratio exactly. `tall.png`
+(200x1400) under `maxHeight: 600` is planned as 85x600 and comes out 85x595.
+Under is compliant and stays compliant. Over would make the next run resize
+again, which is the direction that breaks idempotence, and it cannot happen.
+
+**4. Colour handling is three-way, and the difference is invisible in the tags.**
+Verified by reading stored pixel values back with `{ ignoreIcc: true }`, because
+reading them *without* it re-applies the ICC import and makes a correctly tagged
+non-sRGB output look identical to an sRGB one.
+
+| plan | call | stored pixels | embedded tag |
+|---|---|---|---|
+| has `toColorSpace` | `withIccProfile('srgb')` | converted to sRGB | sRGB, 480 B |
+| none, source has an ICC | `keepIccProfile()` | left in the source space | the source's |
+| none, no ICC | nothing | sRGB | untagged |
+
+All three are colour-correct. `toColourspace('srgb')` is never called: it changes
+libvips' interpretation of the numbers rather than performing the ICC transform,
+and it is not needed anyway, because a plain encode of a CMYK JPEG already
+emerges as sRGB.
+
+**5. Budget-driven plans are skipped, not attempted.** `EncodeOperation.
+budgetDriven` marks the plans where a byte ceiling is the *reason* for the
+encode, and the quality search does not exist until the byte-budget phase.
+`renderCandidate()` throws on one rather than encoding something it cannot
+verify, and the executor must report those files as `skipped` with a plain
+reason *before* any encoding happens. Failing after a wasted encode would read
+as a bug rather than as a stated limitation, and `maxBytes` is common enough in
+real configs that the phase would look broken.
+
+**6. A case-only self-rename is performed in two steps, and only where it is
+needed.** `a.JPG` to `a.jpg` is one file on macOS and Windows, so a direct
+rename is a no-op and the extension is never corrected. `commitRename()` goes
+through an interim name for exactly that case: a case-only difference under
+case-insensitive path semantics. Everywhere else the plain rename is correct,
+and taking the two-step route anyway would put the user's only copy under an
+interim name for no reason at all.
+
+**During that window the interim file is the only copy of the image**, which
+makes its name a safety property rather than a detail. It is
+`<target>.rasterwright-moving-<pid>-<rand>`: visible, not a dotfile, named after
+where it was going, and deliberately *not* `.rasterwright-tmp-*`. Nothing ever
+unlinks one. It is not registered with `TempRegistry` (which now refuses to
+accept anything that is not a temp file), the stale sweep skips it, and
+`recoverInterruptedMoves()` puts it back under its intended name on the next
+run. Where that name is already occupied the file is left exactly as it is and
+reported as needing attention, because the one thing worse than an oddly named
+image is a deleted one. If the second rename fails, the first is undone and the
+error names all three paths.
+
+The earlier draft of this got it wrong in a way worth recording: it reused the
+temp prefix and registered the interim file, so a Ctrl+C or a hard kill plus one
+later run would have deleted the user's only copy. Two mechanisms whose whole
+purpose is "delete this, it is disposable" were pointed at the one file that was
+not. This closes the known limitation recorded in `05`.
+
+**7. Before-copies are deferred to the review phase.** This phase's whole claim
+is that nothing partial is ever left on disk, and a second write surface brings
+its own partial states: orphaned copies after a SIGINT, a half-written manifest,
+retention policy, `.gitignore` handling, and a `.rasterwright/` directory the
+read-only snapshot tests currently prove never appears. Each is a way for the
+safety proof to fail for reasons unrelated to the safety layer. The cost of
+waiting is low: the executor holds the original bytes in a Buffer already, so
+adding the copy later is one insertion at a call site that will be marked as
+such. `runId` and `engine` are on `FixReport` now so the manifest has something
+to key on when it arrives.
+
+**8. The git survey answers `unknown`, never "clean", when it cannot answer.**
+`rev-parse --show-toplevel` detects the repository, because the config can sit
+below the work tree root. One `status --porcelain -z --no-renames
+--untracked-files=all` call per 1000 pathspecs classifies every path as clean,
+modified (staged counts as modified, because it is still uncommitted) or
+untracked. `--untracked-files=all` matters: without it an untracked file inside
+an untracked directory is reported as the directory, and the file about to be
+overwritten is never named. Status output is relative to the work tree root while
+pathspecs are relative to the working directory, so the prefix is stripped back
+off. A git that cannot be run gives `state: 'unknown'`; a git that runs and
+refuses gives `not-a-repo`, which is a real answer rather than a failure to get
+one.
+
+Untracked files are warned about separately from modified ones. Section 8 only
+named uncommitted modifications, but an untracked image has no git history at
+all, so overwriting it is strictly less recoverable. The remedies differ too:
+commit or stash for a modified file, `git add` or `--backup-dir` for an untracked
+one.
+
+**9. Two env-gated hooks exist, for properties only observable from outside the
+process.** "The second run writes zero bytes" cannot be proved by comparing
+hashes, and the integration tests spawn a real CLI child process, so no stub can
+be injected. `RASTERWRIGHT_TRACE_WRITES=<path>` appends one line per mutating
+filesystem step (`temp-write`, `rename`, `unlink`), so an empty trace file is the
+assertion. `RASTERWRIGHT_ABORT_AFTER=temp-write` calls `process.abort()` between
+the fsync and the rename, which is the one moment residue is possible. Both are
+inert unless set, are documented in `atomic.ts` as test-only, and are read from
+the environment per call so a normal run behaves exactly as if they did not
+exist.
+
+**10. The candidate is verified as a buffer, never as a temp file.**
+`inspectBuffer()` was extracted from `inspect()` for this: it yields a full
+`ImageInfo` from bytes that have never touched disk. Verifying a temp file
+instead would mean a crash mid-verification leaves a file on disk that nothing
+has yet vouched for. It also means the candidate is measured by exactly the same
+inspector the read path uses, rather than by a parallel implementation that can
+drift.
+
+**11. `runFixPlan` was split so execution and the dry run share one preflight.**
+`planRun(config, version, options)` returns `{ plans, conflicts, check,
+diagnostics, permissions }`; `runFixPlan` builds the dry-run report from it. The
+alternative was duplicating `surveyTargets`, which is where all the `lstat`
+conservatism about occupied paths lives, and an executor running against a plan
+set a different preflight approved is not the plan the dry run described.
+
+**12. A 16-bit source is `unsupported`, not resized.** Sharp's encoders write 8
+bits per channel, so a 16-bit PNG through any encode comes back `uchar` with no
+warning and half its precision gone. Honouring a `maxWidth` at that price is not
+a fix. `ImageInfo` gained `bitDepth` (from libvips' band format, `ushort` being
+the one that matters), `check --json` reports it, and `planFile()` returns
+`unsupported` with `"<n>-bit source; v0 encodes 8-bit only"` whenever a plan
+would encode one. A rename-only plan touches no pixels, so an extension
+correction on a 16-bit file is still performed.
+
+**13. The pipeline repeats two of the planner's refusals.** `renderCandidate()`
+throws on a 16-bit source and on a JPEG encode of an image with meaningful
+alpha, checking the *image* rather than trusting `preserveAlpha`. Both are
+already impossible by construction, and both are unrecoverable if they ever
+happen: flattened transparency and discarded precision cannot be undone from the
+output. The check sits on the far side of the planner boundary, so the planner
+changing is not enough to reach it.
+
+**14. Never rename onto a path that already exists.** Every rename that creates
+a *new* name lstats the destination immediately beforehand and refuses if
+anything is there, `convertAndReplace` included. Batch preflight already answers
+the same question across the whole plan set, so this is the last line of defence
+rather than the first, and it exists because the two answers are separated by
+however long the run takes. A residual TOCTOU window remains between the lstat
+and the rename: `rename(2)` has no portable fail-if-exists mode
+(`RENAME_NOREPLACE` is Linux-only and Node does not expose it), the window is
+microseconds, and the alternative is a link-then-unlink dance that is not atomic
+either.
+
+**15. The directory entry is fsynced after every rename.** A rename is atomic
+with respect to readers, but the entry can still be in the page cache when the
+power goes out, so the file's contents survive and its name does not. Failures
+are tolerated: some platforms refuse to open a directory for reading, and
+failing a rename that already succeeded would be worse than the risk.
+
+**16. The stale sweep skips temp files whose owning process is alive.** The pid
+is in the name, so `process.kill(pid, 0)` answers it (`EPERM` counts as alive).
+Without this, two concurrent runs over one project would delete each other's
+in-flight temp files and turn safe writes into failed ones.
+
+**17. The git survey reports ignored files, and distinguishes "no" from "I
+cannot tell".** `--ignored=matching` adds a fourth classification: git has no
+history for an ignored image either, so overwriting one is as irreversible as
+overwriting an untracked one, and the remedy differs again (`git add -f`, not
+`git add`). `--literal-pathspecs` stops git reading `star[1].png` as a character
+class and reporting the file as clean. Only `fatal: not a git repository` means
+`not-a-repo`; every other refusal, including a root git could not enter, is
+`unknown` with git's own message attached, because `fix` refuses outside a
+repository and proceeds inside one, so a confident wrong answer sends the whole
+run down the wrong path. A path git reports that cannot be mapped back to
+something the caller asked about makes the survey `unknown` rather than being
+dropped, since dropping it would report that file as clean.
+
+**18. Recorded, not implemented.** Three things this phase found and
+deliberately left alone.
+
+*Indexed PNG sources grow.* `png({ palette: false })` writes truecolour, so a
+palette PNG that goes through any rewrite can come out roughly three times its
+original size. `palette: true` is not the answer on its own: it is only lossless
+while the colour count is unchanged, and a resize interpolates new colours, so
+it would quietly become a lossy path. This is the byte-budget phase's decision,
+and it will probably want a palette flag on `ImageInfo` to make it.
+
+*A truncated JPEG passes inspection.* `sharp().metadata()` reads the header and
+does not decode, so a file whose pixel data is cut short inspects cleanly and
+gets a plan. `sharp(source, { failOn: 'error' })` in the pipeline is the
+backstop: the decode throws during `toBuffer()`. 2b must catch that and report
+the file as `failed` with the decoder's message, leaving the original alone,
+exactly as it does for a file that fails to open.
+
+*The pre-rename existence check has a residual TOCTOU window.* See item 14.

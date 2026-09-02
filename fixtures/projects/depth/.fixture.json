@@ -1,0 +1,7 @@
+{
+  "images": {
+    "assets/deep.png": "deep16.png",
+    "assets/ordinary.png": "plain.png",
+    "assets/deep-named.jpg": "deep16.png"
+  }
+}

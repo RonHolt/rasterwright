@@ -131,6 +131,13 @@ const FIXTURES: Fixture[] = [
     build: () =>
       solid(300, 200, '#3366aa').png({ compressionLevel: 9 }).keepIccProfile().withIccProfile('srgb').toBuffer(),
   },
+  // 16 bits per channel. Sharp's encoders write 8, so any rewrite of this file
+  // would silently halve its precision; v0 reports it as unsupported instead.
+  // Wide enough to break a maxWidth rule, so the refusal is actually reached.
+  {
+    name: 'deep16.png',
+    build: () => solid(1600, 900, '#33aa66').toColourspace('rgb16').png({ compressionLevel: 9 }).toBuffer(),
+  },
   // Not an image at all, despite the extension.
   { name: 'corrupt.jpg', build: async () => Buffer.from('This is not a JPEG. Not even slightly.\n') },
 ];

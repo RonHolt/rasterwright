@@ -9,3 +9,11 @@ rules:
   # The default. A non-normal orientation flag is an error.
   "normalized/**":
     stripMetadata: false
+
+  # autoOrient is off *and* a constraint forces a rewrite anyway. A plain
+  # re-encode would drop the orientation flag while leaving the pixels
+  # unrotated, so the image would suddenly display sideways. The plan preserves
+  # the flag instead, and says that a minimal EXIF block will remain.
+  "kept-oversized/**":
+    autoOrient: false
+    maxWidth: 300

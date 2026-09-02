@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { classifyColorSpace, inspect } from '../../src/scanner/inspect.js';
+import { classifyColorSpace, inspect, inspectBuffer } from '../../src/scanner/inspect.js';
 import { readIccSummary } from '../../src/utils/icc.js';
 import { FIXTURE_IMAGES } from '../helpers/project.js';
 
@@ -50,6 +50,13 @@ describe('inspect', () => {
   it('distinguishes a used alpha channel from an unused one', async () => {
     expect(await info('transparent.png')).toMatchObject({ hasAlpha: true, isOpaque: false });
     expect(await info('opaque-alpha.png')).toMatchObject({ hasAlpha: true, isOpaque: true });
+  });
+
+  it('reports bits per channel, so a 16-bit source is not silently downgraded', async () => {
+    expect((await info('deep16.png')).bitDepth).toBe(16);
+    expect((await info('plain.png')).bitDepth).toBe(8);
+    expect((await info('compliant.jpg')).bitDepth).toBe(8);
+    expect((await info('sample.webp')).bitDepth).toBe(8);
   });
 
   it('leaves isOpaque null when there is no alpha channel to examine', async () => {
@@ -113,6 +120,41 @@ describe('inspect', () => {
     const result = await inspect(FIXTURE_IMAGES, 'nope.jpg');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/could not read file/);
+  });
+});
+
+/**
+ * Execution has to inspect a candidate that has never touched disk, so the
+ * buffer half of the inspector is what verifies every file Rasterwright writes.
+ * If it ever disagreed with the path half, `check` and `fix` would be measuring
+ * files with two different rulers.
+ */
+describe('inspectBuffer', () => {
+  const names = fs.readdirSync(FIXTURE_IMAGES).sort();
+
+  it('has fixtures to compare', () => {
+    expect(names.length).toBeGreaterThan(10);
+  });
+
+  for (const name of names) {
+    it(`agrees with inspect() for ${name}`, async () => {
+      const fromPath = await inspect(FIXTURE_IMAGES, name);
+      const fromBuffer = await inspectBuffer(name, fs.readFileSync(path.join(FIXTURE_IMAGES, name)));
+      expect(fromBuffer).toEqual(fromPath);
+    });
+  }
+
+  it('labels the info with the path it was given, not one it read', async () => {
+    const bytes = fs.readFileSync(path.join(FIXTURE_IMAGES, 'compliant.jpg'));
+    const result = await inspectBuffer('assets/somewhere/else.jpg', bytes);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.info.path).toBe('assets/somewhere/else.jpg');
+  });
+
+  it('reports undecodable bytes rather than throwing', async () => {
+    const result = await inspectBuffer('nonsense.jpg', Buffer.from('not an image at all'));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/could not decode image/);
   });
 });
 

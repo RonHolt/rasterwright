@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { cleanupProjects, copyProject, runCli } from '../helpers/project.js';
@@ -468,5 +470,115 @@ describe('json plan', () => {
 
     expect(planFor(report, 'normalized/rotated.jpg').operations[0]).toMatchObject({ op: 'autoOrient' });
     expect(report.files.some((file) => file.path === 'kept/rotated.jpg')).toBe(false);
+  });
+});
+
+/**
+ * Sharp's encoders write 8 bits per channel. Re-encoding a 16-bit source to
+ * satisfy a width limit would halve its precision without saying so, and there
+ * is no way to honour both, so the file is reported as out of scope instead.
+ */
+describe('16-bit sources', () => {
+  it('reports a 16-bit image as unsupported rather than re-encoding it', async () => {
+    const { report } = await planJson('depth');
+    const plan = planFor(report, 'assets/deep.png');
+
+    expect(plan.status).toBe('unsupported');
+    expect(plan.operations).toEqual([]);
+    expect(plan.reasons).toEqual(['16-bit source; v0 encodes 8-bit only']);
+    expect(report.summary.unsupported).toBe(1);
+  });
+
+  it('exits 1, because the width violation is still outstanding', async () => {
+    const { code, report } = await planJson('depth');
+    expect(code).toBe(1);
+    expect(report.complete).toBe(false);
+  });
+
+  it('still plans an 8-bit sibling in the same project', async () => {
+    const { report } = await planJson('depth');
+    expect(report.files.some((file) => file.path === 'assets/ordinary.png')).toBe(false);
+    expect(report.summary.unchanged).toBeGreaterThan(0);
+  });
+
+  it('still corrects an extension on one, because a rename touches no pixels', async () => {
+    const { report } = await planJson('depth', ['--allow-renames']);
+    const plan = planFor(report, 'assets/deep-named.jpg');
+
+    expect(plan.status).toBe('planned');
+    expect(ops(plan)).toEqual(['rename']);
+    expect(plan.targetPath).toBe('assets/deep-named.png');
+  });
+
+  it('says so in the human report', async () => {
+    const root = copyProject('depth');
+    const { stdout } = await runCli(['fix', '--dry-run'], root);
+
+    expect(stdout).toContain('CANNOT FIX');
+    expect(stdout).toContain('16-bit source; v0 encodes 8-bit only');
+  });
+
+  it('exposes the depth in check --json', async () => {
+    const root = copyProject('depth');
+    const { stdout } = await runCli(['check', '--json'], root);
+    const report = JSON.parse(stdout) as {
+      files: { path: string; image?: { bitDepth: number } }[];
+    };
+
+    expect(report.files.find((file) => file.path === 'assets/deep.png')?.image?.bitDepth).toBe(16);
+    expect(report.files.find((file) => file.path === 'assets/ordinary.png')?.image?.bitDepth).toBe(8);
+  });
+});
+
+/**
+ * `autoOrient: false` says "leave the flag alone", not "leave the file alone".
+ * When another error forces a rewrite, the encode has to carry the flag through
+ * or the image starts displaying rotated, and the plan has to say it is doing so.
+ */
+describe('orientation preserved through a rewrite another error required', () => {
+  it('plans a resize and an encode that keeps the flag', async () => {
+    const { report } = await planJson('autoorient');
+    const plan = planFor(report, 'kept-oversized/rotated.jpg');
+
+    expect(plan.status).toBe('planned');
+    expect(ops(plan)).toEqual(['resize', 'encode']);
+    expect(plan.operations.find((operation) => operation.op === 'encode')).toMatchObject({
+      preservesOrientation: true,
+    });
+  });
+
+  it('does not set the flag where the pixels are being rotated instead', async () => {
+    const { report } = await planJson('autoorient');
+    const plan = planFor(report, 'normalized/rotated.jpg');
+
+    expect(plan.operations.find((operation) => operation.op === 'encode')).toMatchObject({
+      preservesOrientation: false,
+    });
+  });
+
+  it('warns in the plan that a minimal EXIF block will remain', async () => {
+    const { report } = await planJson('autoorient');
+    const notes = planFor(report, 'kept-oversized/rotated.jpg').notes.join(' ');
+
+    expect(notes).toMatch(/orientation 6 is preserved/);
+    expect(notes).toMatch(/minimal EXIF block/);
+    expect(notes).toMatch(/metadata warning/);
+  });
+
+  it('shows it in the human report', async () => {
+    const root = copyProject('autoorient');
+    const { stdout } = await runCli(['fix', '--dry-run'], root);
+
+    expect(stdout).toContain('kept-oversized/rotated.jpg');
+    expect(stdout).toMatch(/orientation\s+EXIF flag preserved; the pixels are not rotated/);
+  });
+
+  it('still writes nothing', async () => {
+    const root = copyProject('autoorient');
+    const before = fs.readFileSync(path.join(root, 'kept-oversized', 'rotated.jpg'));
+
+    await runCli(['fix', '--dry-run'], root);
+
+    expect(fs.readFileSync(path.join(root, 'kept-oversized', 'rotated.jpg')).equals(before)).toBe(true);
   });
 });

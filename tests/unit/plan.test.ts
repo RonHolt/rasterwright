@@ -36,6 +36,7 @@ function image(overrides: Partial<ImageInfo> = {}): ImageInfo {
     storedHeight: 600,
     hasAlpha: false,
     isOpaque: null,
+    bitDepth: 8,
     pixelColorSpace: 'srgb',
     colorSpaceStatus: 'srgb',
     hasIccProfile: false,
@@ -426,6 +427,58 @@ describe('orientation', () => {
   });
 });
 
+/**
+ * The case that makes `autoOrient: false` dangerous rather than merely quiet.
+ *
+ * Nothing about the flag is a finding here, so no `autoOrient` operation is
+ * planned. But an encoder drops metadata by default, so a rewrite that some
+ * *other* error demanded would clear the flag and leave the pixels unrotated,
+ * and the image would start displaying sideways. The planner has to say the
+ * flag is being carried through, otherwise the dry run is not a description of
+ * the run.
+ */
+describe('orientation preserved through a rewrite it did not ask for', () => {
+  const rotated = image({ orientation: 6, storedWidth: 600, storedHeight: 400, width: 400, height: 600 });
+
+  it('sets the flag on the encode when another error forces a rewrite', () => {
+    const result = plan(rotated, { autoOrient: false, maxWidth: 300 });
+
+    expect(ops(result)).toEqual(['resize', 'encode']);
+    expect(encodeIn(result).preservesOrientation).toBe(true);
+  });
+
+  it('says so in a note, including that EXIF will remain', () => {
+    const note = plan(rotated, { autoOrient: false, maxWidth: 300 }).notes.join(' ');
+    expect(note).toMatch(/orientation 6 is preserved/);
+    expect(note).toMatch(/minimal EXIF block/);
+    expect(note).toMatch(/metadata warning/);
+  });
+
+  it('does not set it when the flag is being applied to the pixels instead', () => {
+    const result = plan(rotated, { autoOrient: true, maxWidth: 300 });
+    expect(ops(result)).toEqual(['autoOrient', 'resize', 'encode']);
+    expect(encodeIn(result).preservesOrientation).toBe(false);
+    expect(result.notes).toEqual([]);
+  });
+
+  it('does not set it on an image whose flag is already normal', () => {
+    const result = plan(image({ width: 4000 }), { autoOrient: false, maxWidth: 300 });
+    expect(encodeIn(result).preservesOrientation).toBe(false);
+  });
+
+  it('plans no rewrite at all when nothing else is wrong', () => {
+    const result = plan(rotated, { autoOrient: false });
+    expect(result.status).toBe('unchanged');
+    expect(result.operations).toEqual([]);
+  });
+
+  it('carries the flag through a format conversion as well', () => {
+    const result = plan(rotated, { autoOrient: false, format: 'webp' }, ALLOW_RENAMES);
+    expect(ops(result)).toEqual(['encode', 'rename']);
+    expect(encodeIn(result).preservesOrientation).toBe(true);
+  });
+});
+
 describe('colour space', () => {
   it('converts a confidently non-sRGB image', () => {
     const cmyk = image({ pixelColorSpace: 'cmyk', colorSpaceStatus: 'non-srgb' });
@@ -504,6 +557,41 @@ describe('images v0 will not touch', () => {
   });
 });
 
+describe('a 16-bit source is never re-encoded', () => {
+  const deep = image({ path: 'assets/deep.png', format: 'png', width: 1600, height: 900, bitDepth: 16 });
+
+  it('is unsupported rather than resized down to 8 bits', () => {
+    const result = plan(deep, { maxWidth: 800 });
+
+    expect(result.status).toBe('unsupported');
+    expect(result.operations).toEqual([]);
+    expect(result.reasons).toEqual(['16-bit source; v0 encodes 8-bit only']);
+    expect(result.unresolved).toEqual(['maxWidth']);
+  });
+
+  it('refuses a format conversion for the same reason', () => {
+    expect(plan(deep, { format: 'webp' }, ALLOW_RENAMES).status).toBe('unsupported');
+  });
+
+  it('names the depth it actually found', () => {
+    const result = plan(image({ width: 4000, bitDepth: 32 }), { maxWidth: 800 });
+    expect(result.reasons).toEqual(['32-bit source; v0 encodes 8-bit only']);
+  });
+
+  it('still corrects an extension, because a rename touches no pixels', () => {
+    const mislabelled = image({ path: 'assets/deep.jpg', format: 'png', bitDepth: 16 });
+    const result = plan(mislabelled, { format: 'png' }, ALLOW_RENAMES);
+
+    expect(result.status).toBe('planned');
+    expect(ops(result)).toEqual(['rename']);
+    expect(result.targetPath).toBe('assets/deep.png');
+  });
+
+  it('leaves an ordinary 8-bit image alone', () => {
+    expect(plan(image({ width: 4000, bitDepth: 8 }), { maxWidth: 800 }).status).toBe('planned');
+  });
+});
+
 describe('multiple findings collapse into one plan', () => {
   const everything = image({
     path: 'assets/hero.jpg',
@@ -549,6 +637,60 @@ describe('multiple findings collapse into one plan', () => {
     expect(result.unresolved).toEqual([]);
     expect(result.normalizedDuringRewrite).toEqual(['metadata']);
     expect(result.targetPath).toBe('assets/hero.webp');
+  });
+});
+
+/**
+ * The pipeline hands its buffer to `sharp().jpeg()` without asking questions,
+ * and JPEG cannot hold an alpha channel: transparency flattens to black,
+ * silently and irreversibly. Nothing in the encoder can catch that, so the
+ * guarantee has to be that no plan ever asks for it in the first place.
+ */
+describe('a jpeg encode is never planned for a transparent source', () => {
+  const alphaStates = [
+    { label: 'used alpha', hasAlpha: true, isOpaque: false },
+    { label: 'undetermined alpha', hasAlpha: true, isOpaque: null },
+  ] as const;
+
+  const bodies: RuleBody[] = [
+    { format: 'jpeg' },
+    { format: 'jpeg', maxWidth: 100 },
+    { format: 'jpeg', maxBytes: 1000 },
+    { format: 'jpeg', maxWidth: 100, maxBytes: 1000, stripMetadata: true, colorSpace: 'srgb' },
+  ];
+
+  for (const alpha of alphaStates) {
+    for (const [index, body] of bodies.entries()) {
+      for (const permissions of [NO_PERMISSIONS, ALLOW_RENAMES]) {
+        it(`emits no jpeg encode preserving ${alpha.label} (policy ${index}, renames ${permissions.allowRenames})`, () => {
+          const source = image({
+            path: 'assets/logo.png',
+            format: 'png',
+            width: 400,
+            height: 300,
+            bytes: 50_000,
+            hasAlpha: alpha.hasAlpha,
+            isOpaque: alpha.isOpaque,
+          });
+          const result = plan(source, body, permissions);
+
+          const encodes = [...result.operations, ...result.blockedOperations].filter(
+            (operation) => operation.op === 'encode',
+          );
+          for (const encode of encodes) {
+            expect(encode.format === 'jpeg' && encode.preserveAlpha).toBe(false);
+          }
+          // Belt and braces: this is the shape the policy actually produces.
+          expect(result.status).toBe('unfixable');
+        });
+      }
+    }
+  }
+
+  it('still allows a jpeg encode where the alpha channel is unused', () => {
+    const opaque = image({ path: 'assets/logo.png', format: 'png', hasAlpha: true, isOpaque: true, width: 4000 });
+    const result = plan(opaque, { format: 'jpeg', maxWidth: 300 }, ALLOW_RENAMES);
+    expect(encodeIn(result)).toMatchObject({ format: 'jpeg', preserveAlpha: false });
   });
 });
 

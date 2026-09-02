@@ -144,6 +144,9 @@ function renderOperation(operation: PlannedOperation): string[] {
         );
       }
       if (operation.preserveAlpha) lines.push(row('transparency', 'preserve'));
+      if (operation.preservesOrientation) {
+        lines.push(row('orientation', 'EXIF flag preserved; the pixels are not rotated'));
+      }
       if (operation.lossyReencode) {
         lines.push(row('re-encode', 'lossy source re-encoded; some generation loss'));
       }

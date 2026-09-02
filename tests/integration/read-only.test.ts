@@ -153,6 +153,15 @@ describe('fix --dry-run is read-only', () => {
     await assertReadOnly('broken-config', ['fix', '--dry-run']);
   });
 
+  it('changes nothing when a rewrite has to preserve an orientation flag', async () => {
+    await assertReadOnly('autoorient', ['fix', '--dry-run']);
+  });
+
+  it('changes nothing when a source is too deep to re-encode', async () => {
+    await assertReadOnly('depth', ['fix', '--dry-run']);
+    await assertReadOnly('depth', ['fix', '--dry-run', '--allow-renames']);
+  });
+
   it('changes nothing in a project whose plans would collide', async () => {
     // Preflight is the one step that reads paths outside the scan, via lstat.
     // Probing a name must not create it, and must not touch the occupant.

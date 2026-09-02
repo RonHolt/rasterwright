@@ -5,7 +5,13 @@ import { defaultPathSemantics, validatePlanSet, type PathSemantics } from './ope
 import { runCheck, type RunCheckOptions } from './run-check.js';
 import { toAbsolute } from './utils/paths.js';
 import type { LoadedConfig } from './config/load.js';
-import type { CheckReport, FilePlan, FixPermissions, FixPlanReport } from './types.js';
+import type {
+  CheckReport,
+  FilePlan,
+  FixPermissions,
+  FixPlanReport,
+  PlanSetConflict,
+} from './types.js';
 
 /**
  * The fix-planning pipeline:
@@ -38,11 +44,35 @@ export interface RunFixPlanResult {
   diagnostics: string[];
 }
 
-export async function runFixPlan(
+export interface PlanRunResult {
+  /** Every governed file's plan, in check order, as batch preflight left it. */
+  plans: FilePlan[];
+  conflicts: PlanSetConflict[];
+  /** The underlying check, for callers that want the findings behind a plan. */
+  check: CheckReport;
+  diagnostics: string[];
+  /** The permissions this run was granted, as the plans were built with them. */
+  permissions: FixPermissions;
+}
+
+/**
+ * Everything that has to happen before anything could be written: check, plan
+ * each file, preflight the whole set.
+ *
+ * Split out from report construction because execution needs exactly this and
+ * nothing else. Duplicating it would mean duplicating `surveyTargets`, which is
+ * where all the `lstat` conservatism about occupied paths lives, and an executor
+ * running against a plan set a different preflight approved is not the plan the
+ * dry run described.
+ *
+ * Read-only, as `fix --dry-run` is: the only filesystem access beyond `check`'s
+ * is `lstatSync` on paths a rename would land on.
+ */
+export async function planRun(
   config: LoadedConfig,
   version: string,
   options: RunFixPlanOptions = {},
-): Promise<RunFixPlanResult> {
+): Promise<PlanRunResult> {
   const permissions: FixPermissions = { allowRenames: options.allowRenames === true };
   const { report: check, discovered, diagnostics: checkDiagnostics } = await runCheck(
     config,
@@ -54,9 +84,23 @@ export async function runFixPlan(
   const semantics = defaultPathSemantics();
   const survey = surveyTargets(config.root, planned, discovered, semantics);
   const preflight = validatePlanSet(planned, survey.paths, semantics, survey.unprobeable);
-  const diagnostics = [...checkDiagnostics, ...survey.diagnostics];
 
-  const plans = preflight.plans;
+  return {
+    plans: preflight.plans,
+    conflicts: preflight.conflicts,
+    check,
+    diagnostics: [...checkDiagnostics, ...survey.diagnostics],
+    permissions,
+  };
+}
+
+export async function runFixPlan(
+  config: LoadedConfig,
+  version: string,
+  options: RunFixPlanOptions = {},
+): Promise<RunFixPlanResult> {
+  const { plans, conflicts, check, diagnostics, permissions } = await planRun(config, version, options);
+
   const count = (status: FilePlan['status']): number => plans.filter((plan) => plan.status === status).length;
   const unchanged = plans.filter((plan) => plan.status === 'unchanged');
 
@@ -88,7 +132,7 @@ export async function runFixPlan(
       operations: plans.reduce((total, plan) => total + plan.operations.length, 0),
       ignored: check.summary.ignored,
     },
-    conflicts: preflight.conflicts,
+    conflicts,
     files: plans.filter((plan) => plan.status !== 'unchanged'),
   };
 

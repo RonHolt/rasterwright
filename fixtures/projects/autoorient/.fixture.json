@@ -1,6 +1,7 @@
 {
   "images": {
     "kept/rotated.jpg": "rotated.jpg",
-    "normalized/rotated.jpg": "rotated.jpg"
+    "normalized/rotated.jpg": "rotated.jpg",
+    "kept-oversized/rotated.jpg": "rotated.jpg"
   }
 }
