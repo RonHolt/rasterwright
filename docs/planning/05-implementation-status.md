@@ -7,9 +7,12 @@ Product scope lives in `03`, architecture in `04`, user-facing behaviour in
 
 ## Current state
 
-- HEAD: `d9105e8 fix: only loosen a limit the rule is actually failing`. The
-  last implementation phase was `c39f2eb`, the packaging and agent-docs work;
-  everything since is validation and the fixes it turned up.
+- HEAD: `4b72018 chore: prepare the package for publication`. The last
+  implementation phase was `c39f2eb`, the packaging and agent-docs work;
+  everything since is validation, the fixes it turned up, and the
+  publication prep on 2026-09-03: planning record moved to `docs/planning/`,
+  client names scrubbed, `private` dropped, repository metadata, a CI
+  workflow, and README/skill install paths for every agent.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
   (`--verbose`, `--json`), `fix --dry-run` (`--json`, `--allow-renames`), `fix`
@@ -251,4 +254,7 @@ Still open, in rough order:
    case-only rename and its recovery, directory fsync tolerance, opener.
 4. **Does the skill change agent behaviour?** Install
    `skills/rasterwright/SKILL.md` and compare an agent with and without it.
-5. **Publishing** is the human's call: `private: true`, 0.1.0, no remote.
+5. **Publishing** is the human's call. The tree is ready: `private` is gone,
+   metadata points at `github.com/RonHolt/rasterwright`, `prepublishOnly` runs
+   typecheck and tests. Remaining steps are Ron's: create the repository,
+   push, `npm publish`, tag `0.1.0`.
