@@ -877,8 +877,8 @@ as it was:
 The three remedies are manual on purpose. Dropping further would mean encoding
 below a floor the policy set; changing the dimensions or the format on its own
 would make the output depend on encoder results, which is exactly what
-`fix --dry-run` promises never to happen. See `04-v0-technical-plan.md` section
-19.
+`fix --dry-run` promises never to happen. See
+`docs/planning/04-v0-technical-plan.md` section 19.
 
 Under `--json`, each result carries what the encoder did:
 
@@ -1555,7 +1555,7 @@ Clearly labelled as **not built**:
   answer beyond the explicit failure. `palette: true` is lossless only while the
   colour count is unchanged, which nothing in the metadata guarantees, so it
   needs a raw-pixel equality check and a phase of its own. See
-  `04-v0-technical-plan.md` section 19.
+  `docs/planning/04-v0-technical-plan.md` section 19.
 - **Extra downscale and format fallback under a byte budget.** Stepping the
   dimensions down, or converting to another format, when the quality floor is
   not enough. Both are new policy surface rather than new execution behaviour,
@@ -1564,15 +1564,17 @@ Clearly labelled as **not built**:
   message names them as manual remedies instead.
 - **A contact sheet for agent vision.** One labelled before/after PNG a model
   can look at, rather than a page a person opens. Cheap to add and worth adding
-  if agents start reviewing runs. See `04-v0-technical-plan.md` section 12.
+  if agents start reviewing runs. See `docs/planning/04-v0-technical-plan.md`
+  section 12.
 - **`review --from HEAD`.** Comparing against git's stored copy instead of
   against a retained one. Useful, and not a replacement for the copies: it
   cannot answer for an untracked file, a staged-but-uncommitted state, or a
   project outside a repository.
 
-Deferred, with the reasoning recorded in `04-v0-technical-plan.md` section 14:
-a `preferredFormat` distinct from a hard `format` requirement, a `--strict`
-mode that promotes unknown colour space to an error, and any caching.
+Deferred, with the reasoning recorded in
+`docs/planning/04-v0-technical-plan.md` section 14: a `preferredFormat`
+distinct from a hard `format` requirement, a `--strict` mode that promotes
+unknown colour space to an error, and any caching.
 
 Deliberately out of scope: any GUI, any chatbot, any model inference, an MCP
 server, a plugin system, accounts, telemetry, and a hosted anything.

@@ -13,3 +13,6 @@ fixtures/projects/*/**
 
 # Rasterwright's own working directory (not used by `check`, which is read-only)
 .rasterwright/
+
+# Session handoff notes, local only
+.planning/
