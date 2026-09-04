@@ -12,6 +12,14 @@ printed path is relative to. If there is no `.rasterwright.yml` at or above the
 images you are touching, this skill does not apply, and do not run
 `rasterwright init` to create one unless the user asked for a policy.
 
+## Running the CLI
+
+Every command below is written as `rasterwright ...`. If that is not on `PATH`,
+the project almost certainly has it as a dev dependency: use
+`npx rasterwright ...` from inside the project, or `npm install -D rasterwright`
+if `package.json` does not list it yet. Do not install it globally on the
+user's behalf.
+
 ## The contract
 
 Three rules, in order of how much damage breaking them does.

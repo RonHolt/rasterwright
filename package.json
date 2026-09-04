@@ -5,7 +5,26 @@
   "type": "module",
   "license": "MIT",
   "author": "Ron Holt",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RonHolt/rasterwright.git"
+  },
+  "homepage": "https://github.com/RonHolt/rasterwright#readme",
+  "bugs": {
+    "url": "https://github.com/RonHolt/rasterwright/issues"
+  },
+  "keywords": [
+    "images",
+    "image-policy",
+    "lint",
+    "assets",
+    "sharp",
+    "jpeg",
+    "png",
+    "webp",
+    "cli",
+    "agent-skill"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -23,7 +42,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "fixtures": "tsx scripts/generate-fixtures.ts",
-    "rasterwright": "tsx src/cli/index.ts"
+    "rasterwright": "tsx src/cli/index.ts",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "dependencies": {
     "commander": "^12.1.0",

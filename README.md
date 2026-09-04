@@ -18,6 +18,10 @@ This is a tool built because its author wanted to use it. It is not a product,
 there is nothing to buy, and it makes no network calls, collects no telemetry
 and has no accounts. Broader use is welcome; adoption is not a goal.
 
+It has been used for real on Linux only. macOS and Windows path semantics are
+covered by unit tests and nothing else yet; CI runs the suite on macOS for
+information, not as a gate. Expect 0.x to break things between minor versions.
+
 What exists right now:
 
 | Command | Status |
@@ -55,33 +59,39 @@ whether any of them still look right.
 
 ## Install
 
-There is no published package. Clone the repository and install from it
-locally.
+Requires Node.js 20 or newer. Install it into the project whose images it
+governs, as a dev dependency:
 
 ```bash
-git clone <this repo>
-cd rasterwright
-npm install
-npm test
-```
-
-Requires Node.js 20 or newer. `npm install` runs the build, so `dist/` is
-present afterwards.
-
-Install it into a project as a normal dependency, from a tarball:
-
-```bash
-# in the rasterwright checkout
-npm pack                      # writes rasterwright-0.1.0.tgz
-
-# in the project you want to govern
-npm install /path/to/rasterwright-0.1.0.tgz
+npm install -D rasterwright
 npx rasterwright init
 npx rasterwright check
 ```
 
-`npm install /path/to/rasterwright` works too, and links the checkout instead
-of copying it, so edits in the checkout are live in the project.
+Pinning it per project is deliberate: the encoder is part of the policy's
+meaning, so the version that wrote the images should be the version that
+checks them. A global install (`npm install -g rasterwright`) works too and
+puts `rasterwright` on `PATH`.
+
+Straight from GitHub, ahead of or instead of a release:
+
+```bash
+npm install -D github:RonHolt/rasterwright
+```
+
+`npm install` runs the build on the way in, so `dist/` is present afterwards.
+
+Or from a clone, which is the way to hack on it:
+
+```bash
+git clone https://github.com/RonHolt/rasterwright.git
+cd rasterwright
+npm install
+npm test
+
+# in the project you want to govern, link the checkout instead of copying it
+npm install -D /path/to/rasterwright
+```
 
 Or run it out of the checkout without installing anything:
 
@@ -105,12 +115,45 @@ The agent interface is the CLI, `--json`, and the skill shipped in
 the CLI is a contract a shell can hold, and an integration is a thing to
 maintain.
 
-Install the skill for a coding agent that reads Agent Skills:
+The skill is a single `SKILL.md` in the
+[Agent Skills](https://agentskills.io) format, so any agent that reads skills
+can use it: Claude Code, Codex, Cursor and the rest. It triggers on the presence
+of a `.rasterwright.yml`, and it teaches the agent the check, dry-run, fix,
+check loop, the `--json` field names, and the three things never to do: edit the
+policy to clear a finding, hand-roll an image script for a governed file, or
+delete a file to clear a collision.
+
+Install it once, for every agent on the machine:
 
 ```bash
-cp -r skills/rasterwright ~/.claude/skills/
-# or, from a project that installed the package
+npx skills add RonHolt/rasterwright
+```
+
+Or by hand, into whichever agent you use:
+
+```bash
+# Claude Code
 cp -r node_modules/rasterwright/skills/rasterwright ~/.claude/skills/
+# Codex
+cp -r node_modules/rasterwright/skills/rasterwright ~/.codex/skills/
+```
+
+Or commit it to the governed repository, so everyone who clones it gets the
+skill with the policy. Claude Code reads `.claude/skills/`, Codex reads
+`.agents/skills/`:
+
+```bash
+cp -r node_modules/rasterwright/skills/rasterwright .claude/skills/
+cp -r node_modules/rasterwright/skills/rasterwright .agents/skills/
+```
+
+Whichever way it is installed, one line in the repository's `CLAUDE.md` or
+`AGENTS.md` makes the expectation explicit rather than inferred:
+
+```markdown
+Images under this repository are governed by `.rasterwright.yml`. Run
+`npx rasterwright check` after adding or changing an image, and use
+`npx rasterwright fix` rather than any other tool to bring one into policy.
 ```
 
 The loop is three commands: `rasterwright check --json` to read the state,
@@ -1592,8 +1635,12 @@ npm run rasterwright -- check --config <path>   # run from source
 ```
 
 The published tarball carries `dist/`, `skills/`, `README.md` and `LICENSE`, and
-no source maps. The package stays `private: true` so a stray `npm publish`
-cannot succeed; `npm pack` and `npm install <tarball>` both work regardless.
+no source maps. `npm publish` runs the typecheck and the full test suite first
+(`prepublishOnly`) and then the build (`prepare`), so a broken tree cannot
+ship. Releases are tagged with the bare version number, `0.1.0`, no `v`.
+
+CI runs typecheck, the test suite and a dry-run pack on Node 20 and 22 on
+Linux, plus Node 22 on macOS as an informational job that does not block.
 
 ### Layout
 
