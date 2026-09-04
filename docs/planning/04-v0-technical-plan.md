@@ -1919,7 +1919,7 @@ next command from being a surprise. It is exact rather than estimated because it
 is the same `evaluate` over the same `ImageInfo`, plus one decode error per
 *governed* unreadable file, which is precisely how `run-check` counts them.
 
-Verified against the Bokka theme: `init` predicted 5 errors and 24 warnings, and
+Verified against the real theme: `init` predicted 5 errors and 24 warnings, and
 a real `check` against the generated config reported 5 and 24.
 
 ### 21.5 Never `format`, never `maxHeight`
@@ -2246,11 +2246,11 @@ Two smaller notes from the same session:
 
 ## 24. Decisions from judging `init` taste on unfamiliar repositories
 
-Section 21 built `init` and checked it against one corpus: the Bokka theme,
+Section 21 built `init` and checked it against one corpus: the real theme,
 whose hand-written policy it reproduced. That is a corpus the heuristic was
 tuned while looking at. This pass ran it read-only, through `runInit` (21.10),
 against repositories whose policy has never been written by hand - a legacy
-client theme (`chinburg`, 651 images) and an Astro static site (`portfolio`,
+client theme (`client-theme`, 651 images) and an Astro static site (`portfolio`,
 593 images) - plus a discovery-only sweep over 41 theme and site checkouts to
 see how often each shape occurs.
 
@@ -2260,7 +2260,7 @@ number that contradicted the comment written directly above it.
 
 ### 24.1 The roll-up gave up entirely at four top-level image directories
 
-`chinburg` holds `legacy/` (348 images), `images/` (242), `assets/` (38) and
+`client-theme` holds `legacy/` (348 images), `images/` (242), `assets/` (38) and
 `233-vaughan/` (22). Four anchors, all at depth 1, against `MAX_RULES = 3`. The
 loop picked the deepest, found its parent was the project root, and returned
 one broad `**` rule for all 651 files.
@@ -2294,12 +2294,12 @@ survivors hold one or two files each; rules derived from a single image are
 exactly what that minimum exists to prevent. `dropSmall` now reports that waiver
 so step 5 can tell the two situations apart.
 
-Bounded by a sweep of 41 checkouts: the change fires on 4 of them (`chinburg`,
+Bounded by a sweep of 41 checkouts: the change fires on 4 of them (`client-theme`,
 two `betheme` copies, `Divi`), no repository collapses any more, and the largest
 config produced anywhere is 4 rules. The cap is exceeded by exactly one, and
 only where a real fourth group exists.
 
-A side effect worth stating: `chinburg`'s root-level `screenshot.png` is now
+A side effect worth stating: `client-theme`'s root-level `screenshot.png` is now
 ungoverned, where the broad rule had covered it. That is 21.2 step 1 working as
 designed - a WordPress theme screenshot beside `style.css` is precisely the
 stray file that must not anchor a rule over the whole tree.
@@ -2342,7 +2342,7 @@ a real width violation, and a number its own provenance comment supports.
 
 ### 24.3 What the trials say about the config itself
 
-With both fixes in, `chinburg` produces four rules that each describe their
+With both fixes in, `client-theme` produces four rules that each describe their
 group, and the one intractable group (`images/`, whose p90 width is 6600) tops
 out and honestly flags 122 files rather than pretending. That is the right
 outcome: those plan images genuinely need attention, and a heuristic has no

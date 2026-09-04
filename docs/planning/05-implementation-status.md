@@ -187,7 +187,7 @@ execution; (5) idempotence hardening tests (folded into the phases above); (6)
 ## Human validation pending
 
 Done on 2026-09-02 against the real theme
-(`~/bokka-theme-env/wp-content/themes/bokka-theme`), by Ron:
+(a WordPress theme checkout), by Ron:
 
 - `check` found the four known problems; `fix --allow-renames` renamed the
   mislabelled logo, resized and re-encoded the JPEG (366 KB to 272 KB at
@@ -220,7 +220,7 @@ budget tiers (`04` section 23):
 Done on 2026-09-02, third pass, `init` run read-only against repositories whose
 policy was never hand-written (`04` section 24):
 
-- Trials on a legacy client theme (`chinburg`, 651 images, four top-level image
+- Trials on a legacy client theme (`client-theme`, 651 images, four top-level image
   directories) and an Astro static site (`portfolio`, 593 images, 30 MB source
   photographs), plus a discovery-only sweep over 41 theme and site checkouts.
 - **Two defects found and fixed, both the 23.3 signature** - a generated number
@@ -229,7 +229,7 @@ policy was never hand-written (`04` section 24):
   117-pixel icons and 6600-pixel photographs under one ceiling (4 of the 41
   checkouts); and `bumpRule` fell through to a ladder with zero violations,
   producing `maxWidth: 4000` on a corpus whose widest image is 2800.
-- **With both fixed the generated configs are worth keeping.** `chinburg` gets
+- **With both fixed the generated configs are worth keeping.** `client-theme` gets
   four rules that each describe their group; `portfolio` gets a width limit its
   own comment supports. The sweep produces no collapse anywhere and at most
   four rules in any repository.

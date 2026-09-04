@@ -6,7 +6,7 @@ import { FORMAT_LABEL, type RuleContext } from './types.js';
 /**
  * File extension versus actual encoded format.
  *
- * A real theme turned up `bokka-logo-transparent.png` that Sharp decodes as
+ * A real theme turned up `logo-transparent.png` that Sharp decodes as
  * WebP. Nothing in the policy caught it, and nothing would have: every other
  * check reads the format from the file's contents, so the file looked fine.
  *

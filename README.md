@@ -260,7 +260,7 @@ summarized, notes are hidden until you ask. `--json` stays exhaustive.
 
 ### Extension versus contents
 
-A real theme contained `bokka-logo-transparent.png` that Sharp decodes as WebP.
+A real theme contained `logo-transparent.png` that Sharp decodes as WebP.
 Every other check reads the format from the file's *contents*, so the file
 looked entirely healthy.
 
@@ -674,10 +674,10 @@ WOULD FIX
 
 REQUIRES PERMISSION
 
-⊘ assets/src/images/bokka-logo-transparent.png
+⊘ assets/src/images/logo-transparent.png
 
     rename        .png -> .webp
-    path          assets/src/images/bokka-logo-transparent.webp
+    path          assets/src/images/logo-transparent.webp
     pixels        already in the target format; no re-encode required
     blocked       correcting the extension renames this file, which can break references to it
     permission    rerun with --allow-renames
