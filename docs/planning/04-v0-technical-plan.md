@@ -2362,3 +2362,103 @@ Cost, for the record: 5.6 s for 651 images on the theme, 103 s for 593 on the
 static site. The difference is decode time on 30 MB source photographs, not a
 regression - `init` inspects every image because coverage isn't known until all
 are seen (21.10).
+
+---
+
+## 25. Decisions from the first CI run
+
+The repository went public on 2026-09-04 and the workflow from section 22 ran
+for the first time on a machine that is not the one the suite was written on.
+Node 22 on Ubuntu passed. Node 20 on Ubuntu failed one test, and the
+informational macOS job failed 25. Every failure was the suite's or a real
+bug's, none was the platform's, and the four causes are recorded here because
+each one is a class rather than an instance.
+
+### 25.1 Background git maintenance is a writer the snapshot cannot see coming
+
+The node 20 failure was `ENOENT` from `stat` on
+`.git/objects/maintenance.lock`, inside `snapshotTree`, in the test that proves
+a collision-blocked `fix` changes nothing. The lock file was there for
+`readdir` and gone for `stat`.
+
+The writer was git itself. Since 2.29 a `git commit` can spawn
+`git maintenance run --auto` as a detached background process, and the runner's
+git 2.55 did, right after the fixture commit `initGitRepo` makes. The lock is
+taken and dropped inside a few milliseconds, which is exactly the window the
+walk was in.
+
+Two fixes were possible. Making the snapshot tolerate a file that vanishes
+mid-walk would have made it weaker at precisely its job: the point of hashing
+`.git/` alongside the images is to prove the index was not touched, and a
+walker that shrugs at a vanished file cannot prove that. So the writer goes
+instead: every repository the suite creates now sets `maintenance.auto false`
+and `gc.auto 0` in its local config, in `initGitRepo`, in `git.test.ts`'s own
+`initRepo`, and per invocation in the two `read-only.test.ts` sites that commit
+by hand. Nothing in the suite wants a repository maintained, and a background
+process that outlives its test was never something the suite intended to
+create.
+
+### 25.2 macOS's temp directory is a symlink, and the CLI reports physical paths
+
+Fifteen macOS failures were one fact. `os.tmpdir()` there is
+`/var/folders/...`, and `/var` is a symlink to `/private/var`. A test built its
+expected path from the directory it made, while the CLI printed a path built
+from `process.cwd()`, which the OS hands back with symlinks resolved. Thirteen
+`init` assertions, one `review` assertion and one `loadConfig` assertion
+compared the two spellings of one directory and failed.
+
+Every `mkdtempSync` in the suite is now wrapped in `realpathSync`, so a path a
+test builds is the path the CLI prints. `copyProject` carries the comment
+saying why; the other sites just do it. The loader was left alone: it resolves
+textually with `path.resolve`, which keeps the path the user gave rather than
+one the filesystem prefers, and there is no reason for a config path to change
+its spelling on the way through.
+
+### 25.3 A root reached through a symlink made git answer `unknown` for everything
+
+Nine `git.test.ts` failures were a real bug, and the only one of the four that
+a user could have hit. `surveyGit` strips the work-tree prefix off every path
+`git status` reports, and it computed that prefix as
+`path.relative(toplevel, root)`. `rev-parse --show-toplevel` comes back with
+symlinks resolved; `root` came in as the caller spelled it. On macOS that put a
+project at `/var/...` "outside" its own work tree at `/private/var/...`, every
+reported path failed the prefix check, and the survey returned `unknown` with
+the reason *git reported X, which is outside root*.
+
+The consequence was safe but wrong. `fix` treats `unknown` as "cannot promise
+an undo" and refuses with the `--no-git` remedy, so a user whose project sat
+behind a symlink - a `/var` path on macOS, a `--config` pointing through a link
+anywhere - could only proceed by giving up the guarantee that git was in fact
+providing. `process.cwd()` is physical on every platform, so the common case
+was never affected, which is why 651 images on Linux never showed it.
+
+Both sides of the comparison now go through `physicalPath`, which is
+`fs.realpathSync.native` with a fall-back to `path.resolve` for a path that
+cannot be read. The tests that compared `survey.toplevel` already did so
+through `realpathSync` on both sides, which is how the author knew about the
+symlink and still missed the prefix.
+
+### 25.4 One test forced case-sensitive semantics onto a filesystem that folds case
+
+`commitRename` takes a `semantics` option so the two-step rename can be tested
+without a case-folding volume, and one test passed `'case-sensitive'`
+explicitly to prove the direct route works. On macOS's default volume
+`photo.JPG` and `photo.jpg` are one file, so that test asked for a direct
+rename onto the source itself, and `refuseIfPresent` refused - correctly, from
+the filesystem's point of view, and irrelevantly from the test's.
+
+The test now probes the temp filesystem once at module load, by writing
+`probe.a` and asking whether `PROBE.A` exists, and skips itself where the
+answer is yes. Real runs never pass `semantics`; they take the platform
+default, which macOS gets right. The two-step route is covered by its own
+tests on every platform.
+
+### 25.5 What the macOS job says now, and what it still does not
+
+With 25.2 to 25.4 in, nothing platform-specific is known to fail on macOS, but
+the job stays `experimental` until a person has run the tool there. CI proves
+the suite passes on the runner's filesystem, which is APFS with case folding,
+and that covers more than it did - the two-step rename now has a folding
+volume to run on - but the opener, the review page and `.rasterwright`
+handling have still only been exercised by hand on Linux, and that is what
+`experimental` means here.

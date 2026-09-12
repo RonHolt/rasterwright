@@ -108,7 +108,7 @@ describe('check is read-only', () => {
     const { execFileSync } = await import('node:child_process');
     execFileSync('git', ['init', '-q'], { cwd: root });
     execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'add', '-A'], { cwd: root });
-    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'fixture'], {
+    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', 'commit', '-qm', 'fixture'], {
       cwd: root,
     });
 
@@ -192,7 +192,7 @@ describe('fix --dry-run is read-only', () => {
     const { execFileSync } = await import('node:child_process');
     execFileSync('git', ['init', '-q'], { cwd: root });
     execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'add', '-A'], { cwd: root });
-    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'fixture'], {
+    execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', 'commit', '-qm', 'fixture'], {
       cwd: root,
     });
 

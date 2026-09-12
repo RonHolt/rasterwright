@@ -38,7 +38,7 @@ afterAll(cleanupProjects);
 const scratchDirs: string[] = [];
 
 function scratchDir(label: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `rasterwright-${label}-`));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `rasterwright-${label}-`)));
   scratchDirs.push(dir);
   return dir;
 }

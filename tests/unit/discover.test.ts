@@ -9,7 +9,7 @@ import { discover } from '../../src/scanner/discover.js';
 const dirs: string[] = [];
 
 function project(files: Record<string, string>): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-discover-'));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-discover-')));
   dirs.push(dir);
   for (const [relative, content] of Object.entries(files)) {
     const target = path.join(dir, relative);

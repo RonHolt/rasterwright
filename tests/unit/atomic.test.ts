@@ -29,8 +29,24 @@ const execFileAsync = promisify(execFile);
  */
 let dir: string;
 
+/**
+ * Whether the temp filesystem folds case. macOS's default volume does, and
+ * there `photo.JPG` and `photo.jpg` are one file: a test that forces
+ * `case-sensitive` semantics onto it asks for a direct rename onto the source
+ * itself, and the refusal it gets is the filesystem's, not the code's.
+ */
+const TEMP_FOLDS_CASE = ((): boolean => {
+  const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-case-'));
+  try {
+    fs.writeFileSync(path.join(probe, 'probe.a'), '');
+    return fs.existsSync(path.join(probe, 'PROBE.A'));
+  } finally {
+    fs.rmSync(probe, { recursive: true, force: true });
+  }
+})();
+
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-atomic-'));
+  dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-atomic-')));
 });
 
 afterEach(() => {
@@ -225,7 +241,7 @@ describe('commitRename', () => {
     expect(needsTwoStepRename('/a/photo.JPG', '/a/photo.jpg', 'case-sensitive')).toBe(false);
   });
 
-  it('renames directly on a case-sensitive filesystem', async () => {
+  it.skipIf(TEMP_FOLDS_CASE)('renames directly on a case-sensitive filesystem', async () => {
     const source = write('photo.JPG', 'jpeg bytes');
     const intermediate = await commitRename(source, at('photo.jpg'), { semantics: 'case-sensitive' });
 

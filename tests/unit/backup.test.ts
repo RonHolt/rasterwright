@@ -9,7 +9,7 @@ import { RasterwrightError } from '../../src/utils/errors.js';
 const created: string[] = [];
 
 function tempDir(label: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `rasterwright-${label}-`));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `rasterwright-${label}-`)));
   created.push(dir);
   return dir;
 }

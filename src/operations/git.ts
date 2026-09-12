@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -96,7 +97,12 @@ export function surveyGit(root: string, paths: readonly string[]): GitSurvey {
   // the pathspecs it takes are relative to the working directory. Those are the
   // same thing only when the config sits at the top of the repo, so the prefix
   // has to come back off to give the caller the paths it asked about.
-  const prefix = toPosixPrefix(toplevel.path, root);
+  //
+  // Both sides have to be physical paths. `--show-toplevel` comes back with
+  // symlinks resolved, and a `root` reached through one (macOS's `/var` is a
+  // link to `/private/var`, for a start) would otherwise sit "outside" its own
+  // work tree and turn every answer into `unknown`.
+  const prefix = toPosixPrefix(toplevel.path, physicalPath(root));
 
   const modified = new Set<string>();
   const untracked = new Set<string>();
@@ -239,7 +245,16 @@ function detectToplevel(root: string): ToplevelResult {
   if (toplevel === '') {
     return { state: 'unknown', path: undefined, reason: 'git reported no work tree root' };
   }
-  return { state: 'in-repo', path: path.resolve(toplevel), reason: undefined };
+  return { state: 'in-repo', path: physicalPath(toplevel), reason: undefined };
+}
+
+/** `target` with symlinks resolved, or merely made absolute when it cannot be read. */
+function physicalPath(target: string): string {
+  try {
+    return fs.realpathSync.native(target);
+  } catch {
+    return path.resolve(target);
+  }
 }
 
 /**

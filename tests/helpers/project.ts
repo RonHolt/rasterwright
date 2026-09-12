@@ -24,7 +24,11 @@ const tempDirs: string[] = [];
 export function copyProject(name: string): string {
   const source = path.join(FIXTURE_PROJECTS, name);
   if (!fs.existsSync(source)) throw new Error(`no such fixture project: ${name}`);
-  const target = fs.mkdtempSync(path.join(os.tmpdir(), `rasterwright-${name}-`));
+  // Physical path, because the CLI reports physical paths: its `process.cwd()`
+  // has symlinks resolved, and on macOS `os.tmpdir()` is one (`/var` is a link
+  // to `/private/var`). Every temp directory in the suite is resolved the same
+  // way so that a path a test builds is the path the CLI prints.
+  const target = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `rasterwright-${name}-`)));
   fs.cpSync(source, target, { recursive: true });
   tempDirs.push(target);
   return target;
@@ -118,6 +122,12 @@ export function initGitRepo(root: string, options: { commit?: boolean } = {}): v
   };
 
   git('init', '-q', '-b', 'main');
+  // A commit can spawn `git maintenance run --auto` in the background, which
+  // takes and drops `.git/objects/maintenance.lock` while a test is still
+  // snapshotting the tree - a file that is there for `readdir` and gone for
+  // `stat`. Nothing in the suite wants a repository maintained.
+  git('config', 'maintenance.auto', 'false');
+  git('config', 'gc.auto', '0');
   if (options.commit === false) return;
   git('add', '-A');
   git('commit', '-qm', 'fixtures', '--no-gpg-sign');

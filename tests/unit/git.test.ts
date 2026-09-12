@@ -18,7 +18,7 @@ let dir: string;
 const originalPath = process.env.PATH;
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-git-'));
+  dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-git-')));
 });
 
 afterEach(() => {
@@ -35,6 +35,9 @@ function initRepo(root: string): void {
   git(root, 'init', '--quiet');
   git(root, 'config', 'user.email', 'fixtures@rasterwright.test');
   git(root, 'config', 'user.name', 'Rasterwright Fixtures');
+  // No background `maintenance run --auto` after a commit; see initGitRepo.
+  git(root, 'config', 'maintenance.auto', 'false');
+  git(root, 'config', 'gc.auto', '0');
 }
 
 function put(root: string, relative: string, contents: string): void {

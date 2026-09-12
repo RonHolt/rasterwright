@@ -11,7 +11,7 @@ import { parse as parseYaml } from 'yaml';
 const dirs: string[] = [];
 
 function projectWith(config: string, filename = '.rasterwright.yml'): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-config-'));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-config-')));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, filename), config);
   return dir;
@@ -176,7 +176,7 @@ describe('loadConfig', () => {
   });
 
   it('fails when there is no config anywhere above', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-empty-'));
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-empty-')));
     dirs.push(root);
     // The temp directory has no config; searching upwards must not find one either.
     const anyAbove = findConfig(root);

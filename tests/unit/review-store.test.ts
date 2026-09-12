@@ -25,7 +25,7 @@ import type { ReviewManifest } from '../../src/types.js';
 const dirs: string[] = [];
 
 function scratch(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-review-'));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rasterwright-review-')));
   dirs.push(dir);
   return dir;
 }
