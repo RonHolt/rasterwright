@@ -2462,3 +2462,122 @@ and that covers more than it did - the two-step rename now has a folding
 volume to run on - but the opener, the review page and `.rasterwright`
 handling have still only been exercised by hand on Linux, and that is what
 `experimental` means here.
+
+---
+
+## 26. Decisions from watching an agent use the CLI
+
+Section 22.5 called the skill an experiment, and `03` question 10 asked whether
+a `SKILL.md` changes agent behaviour enough to matter. This pass ran the
+experiment, on 2026-09-11, against the one agent installed on this machine.
+
+### 26.1 The setup
+
+A disposable static site: `index.html`, two clean images under
+`assets/images/`, a `.rasterwright.yml` with one rule (`maxWidth: 1920`,
+`maxBytes: 400kb`, `stripMetadata`, `autoOrient`), rasterwright 0.1.0 installed
+from the packed tarball as a dev dependency, everything committed. Dropped in,
+untracked: `incoming/hero-photo.jpg`, a 4000x3000 phone JPEG, 3.7 MB, EXIF
+orientation 3, 49 kB of metadata - a real camera file, which was also an open
+item from section 17.
+
+The task, identical in every run: *Add the photo at incoming/hero-photo.jpg to
+the site as assets/images/hero.jpg and wire it into the hero section of
+index.html. Do not commit.* No mention of size, policy or tooling.
+
+The agent: Claude Code 2.1.269, headless (`-p`), model Fable 5.1, permissions
+skipped, the developer's own global `CLAUDE.md` and skills present but with no
+mention of Rasterwright anywhere in them. ImageMagick, ffmpeg, vips, Pillow and
+sharp (through the dependency) were all available to hand-roll with. Codex is
+not installed here and was not run.
+
+Four conditions, five runs:
+
+| run | skill in `.claude/skills/` | `CLAUDE.md` line from the README | skill inside `node_modules/rasterwright/` |
+| --- | --- | --- | --- |
+| A1 | no | no | yes (the package ships it) |
+| B1 | yes | yes | yes |
+| C1 | yes | no | yes |
+| D1, D2 | no | no | **stripped** |
+
+### 26.2 The CLI gets used without the skill
+
+Every run used the CLI. All five ended in the same state: `hero.jpg` at
+1920x1440, 382,809 bytes, upright, no EXIF, `check` exit 0, the policy file
+untouched, no ad-hoc script written to fix a governed image, and a second `fix`
+writing nothing. Five identical byte counts across five independent processes
+is also a determinism check that nothing else had run.
+
+The path to the CLI was the same each time and never went through the skill.
+The first command was always `ls -la`, which shows `.rasterwright.yml`; the
+second read it alongside `package.json`, which names the dev dependency; the
+third was `npx rasterwright --help`. From the help text alone, D1 and D2 ran
+`check`, `fix --dry-run`, `fix`, `check` in that order, which is the loop the
+skill teaches. So the answer to `03` question 10, for this agent, is that the
+config file and the dev dependency are what get the CLI used, and the skill is
+not.
+
+### 26.3 What the skill changes is the shape of the use
+
+| run | `--json` | dry run first | offered the review page | touched other image tools | turns | cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| A1 | partly | yes | no - opened the output image with vision | exiftool to inspect | 9 | $1.01 |
+| B1 | yes | yes | yes, with "eyeball before committing" | none | 11 | $0.90 |
+| C1 | yes | no | yes | identify to inspect | 8 | $0.75 |
+| D1 | no | yes | no - built a side-by-side with `convert` | convert, identify, exiftool | 9 | $0.79 |
+| D2 | no | yes | no - opened the output image with vision | identify, exiftool | 9 | $0.89 |
+
+With the skill installed the agent parsed `--json`, handed the human the
+`review --no-open` path and asked them to look, and B1 touched no image tool
+but Rasterwright. Without it the agent read the human-facing output and judged
+the pixels itself: D1 wrote an ImageMagick pipeline to build its own
+before/after strip, A1 and D2 opened the output image directly. None of that
+breaks the contract - the rule is about *fixing* a governed image, not looking
+at one - but it is exactly the improvised verification that step 5 of the
+skill exists to replace, and the review page was sitting on disk in every one
+of those runs. The skill did not save turns or money; B1, which followed every
+step including reading the manifest, was the longest run.
+
+C1 skipped the dry run and went straight to `fix --json`. The skill says to
+read the plan first. One run is not a pattern, but it is the step most likely
+to be dropped, because `fix` reports what it did in the same shape the plan
+would have.
+
+### 26.4 The package leaks the skill, and that is a feature
+
+A1 was meant to be the no-skill condition. It was not: the agent listed
+`node_modules/rasterwright/`, saw `skills/`, and read `SKILL.md` in full before
+running anything. That is why D exists. It is also the cheapest install path
+there is - an agent thorough enough to look inside the package gets the
+contract without anyone copying a directory - so `skills` stays in `files`
+(22.5) and the README's install instructions stay as the way to make it
+reliable rather than incidental.
+
+### 26.5 What this does not show
+
+One model, one harness, one task, at most two runs per condition. Three things
+in particular are untested and are the next experiments, in this order:
+
+- **A task phrased as an image operation.** "Compress the kitchen photo, it is
+  too heavy" is the sentence where reaching for `convert` is the reflex. Here
+  the task named a destination path, so the agent never chose between copying
+  the file raw and processing it; it found the policy and complied with it.
+- **A repository where Rasterwright is not a dependency.** The help-text path
+  does not exist there. The skill says `npm install -D rasterwright`; whether
+  an agent without the skill would find the tool at all is the real test of
+  whether the skill matters.
+- **Another agent and a weaker model.** Codex first, once it is installed. A
+  model that acts before reading `--help` is the one the skill is for.
+
+### 26.6 Two things the runs said about the tool
+
+The camera JPEG - orientation 3, 49 kB EXIF, 4000 pixels wide - was
+auto-oriented, resized, stripped and brought under the ceiling at quality 82
+without a search, in every run. That closes the "camera JPEG with orientation
+and EXIF" item from the messy-inputs list for one file; ICC, CMYK and 16-bit
+are still open.
+
+Every run also flagged the photograph's *content* as wrong for a homebuilder
+hero, unprompted, because the agent looked at the pixels one way or another.
+Rasterwright has no opinion on content, but the review page is the cheap way
+to make that look happen, and 26.3 says the agent only takes it when told to.

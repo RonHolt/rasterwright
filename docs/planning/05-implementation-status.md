@@ -7,18 +7,25 @@ Product scope lives in `03`, architecture in `04`, user-facing behaviour in
 
 ## Current state
 
-- HEAD: `4b72018 chore: prepare the package for publication`. The last
-  implementation phase was `c39f2eb`, the packaging and agent-docs work;
-  everything since is validation, the fixes it turned up, and the
-  publication prep on 2026-09-03: planning record moved to `docs/planning/`,
-  client names scrubbed, `private` dropped, repository metadata, a CI
-  workflow, and README/skill install paths for every agent.
+- HEAD: `796738f fix: survive symlinked roots and git's background
+  maintenance`. The last implementation phase was `c39f2eb`, the packaging
+  and agent-docs work; everything since is validation, the fixes it turned
+  up, the publication prep on 2026-09-03 (planning record moved to
+  `docs/planning/`, client names scrubbed, `private` dropped, repository
+  metadata, a CI workflow, README/skill install paths for every agent), and
+  the fixes from the first CI run (`04` section 25).
+- **Public at `github.com/RonHolt/rasterwright` since 2026-09-04, unpublished
+  on npm, untagged.** The first CI run on that push failed: one flaky test on
+  node 20 and 25 on the informational macOS job. All four causes are fixed
+  in `796738f` and verified locally, including under a symlinked temp
+  directory that reproduces the macOS failures on Linux; the green run on
+  GitHub is still to happen, because it needs the push.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
   (`--verbose`, `--json`), `fix --dry-run` (`--json`, `--allow-renames`), `fix`
   (`--allow-renames`, `--json`, `--no-git`, `--backup-dir`, `--no-review`,
   `--concurrency`), `review` (`--keep`, `--clean`, `--no-open`). Byte budgets
-  enforced. Baseline: 891 tests across 26 files, typecheck and build clean.
+  enforced. Baseline: 891 tests across 26 files (one skipped where the temp filesystem folds case), typecheck and build clean.
   Sharp pinned exactly at `0.35.4`. The vertical-slice loop (`04` section 11)
   is closed: check, fix, check clean, fix again writing nothing, before/after
   page; `init` closes the other end by generating a config where none exists.
@@ -89,7 +96,10 @@ queued. Decisions in `04` section 22 - see Human validation pending below.
 
 ## Recent decisions (not already in 04)
 
-- None beyond `04` sections 15-24. Section 23 is the searched-down quality
+- None beyond `04` sections 15-26. Section 25 is the first CI run: the git
+  maintenance race, the macOS symlink, the case-folding test, and the real
+  `surveyGit` bug a symlinked root exposed. Section 26 is the skill
+  experiment. Section 23 is the searched-down quality
   validation: what the floor of 40 actually looks like, why a byte ceiling is a
   weak lever on flat-colour art, the planner/pipeline resize disagreement it
   exposed, and the failure message that printed a ceiling and the size that
@@ -240,6 +250,25 @@ policy was never hand-written (`04` section 24):
   the repository, not an intention. `init` produces a file worth editing, not a
   policy.
 
+Done on 2026-09-11, fourth pass, two things (`04` sections 25 and 26):
+
+- **The first CI run.** Node 22 on Ubuntu passed; node 20 lost one test to
+  a race with git's background `maintenance run --auto`; macOS lost 25 to
+  `/var` being a symlink, to one test forcing case-sensitive semantics onto
+  a folding volume, and to a real bug - a root reached through a symlink made
+  `surveyGit` answer `unknown` for every path, so `fix` refused it. All fixed;
+  the git bug was reproduced and re-verified on Linux with `TMPDIR` behind a
+  symlink.
+- **The skill experiment.** Five headless Claude Code runs (Fable 5.1) on a
+  governed lab repo, adding a 4000x3000 camera JPEG as a hero image. Every run
+  found the CLI through `.rasterwright.yml`, the dev dependency and `--help`,
+  ran the check/dry-run/fix/check loop and left the policy alone - with or
+  without the skill, and with the skill stripped from the package too. The
+  skill changed the shape: `--json`, the review page offered to the human, no
+  ImageMagick for verification. It did not change whether. Codex was not
+  installed and was not run. The camera JPEG (orientation 3, 49 kB EXIF) was
+  oriented, resized and stripped correctly in every run.
+
 Still open, in rough order:
 
 1. **Review page defaults.** Side by side scales `before` and `after` to their
@@ -248,13 +277,16 @@ Still open, in rough order:
    a fixed-height cell. Overlay fixes both and is one click away. Also still
    unseen: narrow widths (the CSS stacks the pair, never verified in a browser -
    Chrome refused the window resize) and whether 200 cards stay navigable.
-2. **Messy real-world inputs**: camera JPEGs with orientation and EXIF,
-   Photoshop exports with ICC profiles, CMYK, 16-bit PNGs, animated WebP.
+2. **Messy real-world inputs**: Photoshop exports with ICC profiles, CMYK,
+   16-bit PNGs, animated WebP. One camera JPEG with orientation and EXIF is
+   done (`04` 26.6); more of them under `~/Pictures` would not hurt.
 3. **macOS and Windows**: case-insensitive path semantics, the two-step
    case-only rename and its recovery, directory fsync tolerance, opener.
-4. **Does the skill change agent behaviour?** Install
-   `skills/rasterwright/SKILL.md` and compare an agent with and without it.
-5. **Publishing** is the human's call. The tree is ready: `private` is gone,
-   metadata points at `github.com/RonHolt/rasterwright`, `prepublishOnly` runs
-   typecheck and tests. Remaining steps are Ron's: create the repository,
-   push, `npm publish`, tag `0.1.0`.
+4. **The skill experiment's next three runs** (`04` 26.5): a task phrased
+   as an image operation ("compress the kitchen photo"), a repository where
+   Rasterwright is not a dependency, and Codex or a weaker model. The lab is
+   five files and a tarball; rebuilding it is minutes.
+5. **Publishing** is the human's call. The repository exists and is pushed;
+   `prepublishOnly` runs typecheck and tests. Remaining steps are Ron's: push
+   the CI fix and watch the run go green, `npm login`, `npm publish`, tag
+   `0.1.0`.

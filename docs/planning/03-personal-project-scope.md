@@ -342,7 +342,7 @@ Unresolved. Captured rather than answered.
 **Agent-facing**
 
 9. What exactly does an agent need in `--json` output to make a good decision? A guess now; correct it after watching a real agent use it.
-10. Does a `SKILL.md` in the repo actually change agent behavior enough to matter, or does the agent have to be told each time? Worth an experiment before investing in it.
+10. Does a `SKILL.md` in the repo actually change agent behavior enough to matter, or does the agent have to be told each time? Worth an experiment before investing in it. *Answered for one agent on 2026-09-11 (`04` section 26): the config file and the dev dependency are what get the CLI used; the skill changes how it is used.*
 11. Should `review` also emit an image an agent's vision can read (a labeled before/after contact sheet), or is JSON enough? The adversarial review argued this is the genuinely unbuilt piece. It is also easy to add later.
 
 **Scope pressure**
