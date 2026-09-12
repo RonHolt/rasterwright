@@ -18,8 +18,8 @@ Product scope lives in `03`, architecture in `04`, user-facing behaviour in
   on npm, untagged.** The first CI run on that push failed: one flaky test on
   node 20 and 25 on the informational macOS job. All four causes are fixed
   in `796738f` and verified locally, including under a symlinked temp
-  directory that reproduces the macOS failures on Linux; the green run on
-  GitHub is still to happen, because it needs the push.
+  directory that reproduces the macOS failures on Linux. Pushed on
+  2026-09-12: all three jobs green, macOS included, on the first run.
 - **All four v0 commands are implemented.** `init` (`--bare`, `--force`,
   `--config`, `--keep-gitignore`, `--no-gitignore`, `--concurrency`), `check`
   (`--verbose`, `--json`), `fix --dry-run` (`--json`, `--allow-renames`), `fix`
@@ -287,6 +287,5 @@ Still open, in rough order:
    Rasterwright is not a dependency, and Codex or a weaker model. The lab is
    five files and a tarball; rebuilding it is minutes.
 5. **Publishing** is the human's call. The repository exists and is pushed;
-   `prepublishOnly` runs typecheck and tests. Remaining steps are Ron's: push
-   the CI fix and watch the run go green, `npm login`, `npm publish`, tag
-   `0.1.0`.
+   `prepublishOnly` runs typecheck and tests. CI is green on all three jobs.
+   Remaining steps are Ron's: `npm login`, `npm publish`, tag `0.1.0`.
